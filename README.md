@@ -324,12 +324,11 @@ qq_send_gallery             → parts: [{"type":"image","id":galleryId}, {"type"
 - 网络三家真实出图没验过（没有 key），协议层已用本地假服务跑通。
 - `Qwen_普通生图` 画布最后一根线断了（SaveImage 没接图），插件会明说「输出节点没接上任何东西」。
 
-
 ## 手动安装
 
-1. 下载本仓库（git clone 或 Code → Download ZIP）。
-2. 把仓库内容放进 WhaleLife 本体的 plugins\studio\ 目录；**目录名必须是 $id**（manifest 要求 id 与目录同名）。
+1. 下载本仓库（`git clone` 或 Code → Download ZIP）。
+2. 把仓库内容放进 WhaleLife 本体的 `plugins/studio/` 目录；**目录名必须是 `studio`**（manifest 要求 id 与目录同名）。
 3. 重启本体，或到控制台「插件管理」里重载该插件。
 4. 在「插件管理」确认状态为「运行中」；首次使用请打开插件设置页完成必要配置。
 
-本插件不包含任何运行时数据（data/ 已被忽略），升级时直接覆盖源码即可保留你自己的配置。
+本插件不包含任何运行时数据（`data/` 已被忽略），升级时直接覆盖源码即可保留你自己的配置。
