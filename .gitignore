@@ -1,6 +1,11 @@
 
 # 运行时数据（用户自己的配置、缓存、备份）
-data/
+/data/
+/sub/image/data/
+/sub/video/data/
+# 词库：只放行随包的示例词库，用户自己导入的 prompts.json / config.json 不入库
+/sub/promptkit/data/*
+!/sub/promptkit/data/prompts.sample.json
 node_modules/
 backups/
 .artifacts/

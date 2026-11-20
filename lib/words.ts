@@ -1,13 +1,15 @@
 /*! 画室 · 提示词词库引擎。
  *
- * 词库来自鱼仔 PromptForge 的非成人子集，只在本机使用。
+ * 词库可选：优先读用户自己的 data/prompts.json；没有就读随包附带的 prompts.sample.json。
+ * 两个都没有时引擎照样工作，只是词条为 0，页面提示导入，不抛异常。
  * 「提示词小抄」子插件和画画子插件共用这一份逻辑：父插件用 ctx.provide('promptkit') 暴露，
  * 补词配置仍由子插件自己的 data/config.json 管。
  *
  * SPDX-License-Identifier: AGPL-3.0-only
  * Additional terms under AGPLv3 Section 7: see LICENSE-ADDITIONAL.
  */
-import { readFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { dirname } from 'node:path';
 
 export const WORD_KINDS = ['draw', 'selfie', 'snapshot', 'paint'] as const;
 export type WordKind = (typeof WORD_KINDS)[number];
@@ -63,6 +65,29 @@ type Data = {
   tags: WordTag[];
   builtAt: string;
   byCat: Map<string, WordTag[]>;
+  /** 实际读到的文件；两个文件都没有时是用户词库的路径 */
+  path: string;
+  sample: boolean;
+  bytes: number;
+  broken: boolean;
+};
+
+/** 一份都没有时的空词库（页面能打开，工具给导入说明）。 */
+function parseEmpty(path: string, broken = false): Data {
+  return { categories: [], tags: [], builtAt: '', byCat: new Map(), path, sample: false, bytes: 0, broken };
+}
+
+/** 当前词库从哪儿来：自己的文件、随包示例，或两者都没有。 */
+export type WordLibrary = {
+  path: string;
+  exists: boolean;
+  sample: boolean;
+  bytes: number;
+  builtAt: string;
+  categories: number;
+  tags: number;
+  /** 用户自己的词库存在但读不出来（JSON 坏了 / 没有词条），已回退到示例 */
+  broken: boolean;
 };
 
 export function normalizeWordConfig(stored: any, categories: WordCategory[]): WordConfig {
@@ -130,22 +155,90 @@ function usable(tag: WordTag, layer?: string) {
   return true;
 }
 
-export function createWordEngine(options: { file: string; readConfig: () => Promise<any> }) {
+export function createWordEngine(options: { file: string; sample?: string; readConfig: () => Promise<any> }) {
   let cache: Data | null = null;
+  /** 用户词库坏了并回退到示例 */
+  let broken = false;
+
+  /** 依次试：用户自己的词库 → 随包示例。只返回真实存在的文件。 */
+  const candidates = (): Array<{ path: string; sample: boolean; bytes: number }> => {
+    const list: Array<{ path: string; sample: boolean }> = [{ path: options.file, sample: false }];
+    if (options.sample) list.push({ path: options.sample, sample: true });
+    const out: Array<{ path: string; sample: boolean; bytes: number }> = [];
+    for (const item of list) {
+      try {
+        const st = statSync(item.path);
+        if (st.isFile() && st.size > 0) out.push({ ...item, bytes: st.size });
+      } catch {
+        /* 没有这个文件，试下一个 */
+      }
+    }
+    return out;
+  };
+
+  const parse = (path: string, sample: boolean, bytes: number): Data | null => {
+    let raw: any = {};
+    try {
+      raw = JSON.parse(readFileSync(path, 'utf8'));
+    } catch {
+      return null;
+    }
+    const categories: WordCategory[] = (Array.isArray(raw.categories) ? raw.categories : [])
+      .filter((c: any) => c && typeof c.id === 'string' && c.id)
+      .map((c: any) => ({ id: String(c.id), name: String(c.name ?? c.id) }));
+    const tags: WordTag[] = (Array.isArray(raw.tags) ? raw.tags : []).filter(
+      (t: any) => t && categories.some((c) => c.id === t.cat) && (String(t.zh ?? '').trim() || String(t.en ?? '').trim()),
+    );
+    if (!tags.length) return null;
+    const byCat = new Map<string, WordTag[]>();
+    for (const tag of tags) {
+      if (!byCat.has(tag.cat)) byCat.set(tag.cat, []);
+      byCat.get(tag.cat)!.push(tag);
+    }
+    return {
+      categories,
+      tags,
+      builtAt: String(raw.builtAt ?? ''),
+      byCat,
+      path,
+      sample,
+      bytes,
+      broken,
+    };
+  };
 
   const load = (): Data => {
     if (!cache) {
-      const file = JSON.parse(readFileSync(options.file, 'utf8'));
-      const categories: WordCategory[] = Array.isArray(file.categories) ? file.categories : [];
-      const tags: WordTag[] = Array.isArray(file.tags) ? file.tags : [];
-      const byCat = new Map<string, WordTag[]>();
-      for (const tag of tags) {
-        if (!byCat.has(tag.cat)) byCat.set(tag.cat, []);
-        byCat.get(tag.cat)!.push(tag);
+      broken = false;
+      const list = candidates();
+      for (const item of list) {
+        const data = parse(item.path, item.sample, item.bytes);
+        if (data) {
+          cache = data;
+          break;
+        }
+        if (!item.sample) broken = true;
       }
-      cache = { categories, tags, builtAt: String(file.builtAt ?? ''), byCat };
+      if (!cache) {
+        broken = list.some((item) => !item.sample);
+        cache = parseEmpty(join(options.file), broken);
+      }
     }
     return cache;
+  };
+
+  const library = async (): Promise<WordLibrary> => {
+    const data = load();
+    return {
+      path: data.path,
+      exists: data.bytes > 0,
+      sample: data.sample,
+      bytes: data.bytes,
+      builtAt: data.builtAt,
+      categories: data.categories.length,
+      tags: data.tags.length,
+      broken: data.broken,
+    };
   };
 
   const cfgOf = async () => {
@@ -317,7 +410,53 @@ export function createWordEngine(options: { file: string; readConfig: () => Prom
       stats: stats(cfg),
       categories: data.categories.map((c) => ({ id: c.id, name: c.name, count: (data.byCat.get(c.id) ?? []).length })),
       builtAt: data.builtAt,
+      library: await library(),
     };
+  };
+
+  /** 导入自己的词库：校验后写到 data/prompts.json（覆盖），并清缓存。 */
+  const importLibrary = async (text: string): Promise<WordLibrary> => {
+    const raw = String(text ?? '').trim();
+    if (!raw) throw Error('词库内容是空的');
+    if (raw.length > 8 * 1024 * 1024) throw Error('词库文件太大，上限 8MB');
+    let parsed: any;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      throw Error('不是合法的 JSON');
+    }
+    if (!Array.isArray(parsed?.categories) || !parsed.categories.length) throw Error('缺少 categories 数组');
+    if (!Array.isArray(parsed?.tags) || !parsed.tags.length) throw Error('缺少 tags 数组');
+    const categories: WordCategory[] = parsed.categories
+      .filter((c: any) => c && typeof c.id === 'string' && c.id)
+      .map((c: any) => ({ id: String(c.id), name: String(c.name ?? c.id) }));
+    if (!categories.length) throw Error('categories 里没有合法的分类');
+    const ids = new Set(categories.map((c) => c.id));
+    const tags: WordTag[] = parsed.tags
+      .filter((t: any) => t && ids.has(String(t.cat ?? '')))
+      .map((t: any) => ({ cat: String(t.cat), zh: String(t.zh ?? ''), en: String(t.en ?? '') }))
+      .filter((t: WordTag) => t.zh.trim() || t.en.trim());
+    if (!tags.length) throw Error('tags 里没有能用的词条（cat 要能对上 categories）');
+    const clean = {
+      version: parsed.version ?? 1,
+      license: String(parsed.license ?? ''),
+      builtAt: String(parsed.builtAt ?? new Date().toISOString()),
+      categories,
+      tags,
+    };
+    mkdirSync(dirname(options.file), { recursive: true });
+    const tmp = `${options.file}.tmp`;
+    writeFileSync(tmp, JSON.stringify(clean), 'utf8');
+    renameSync(tmp, options.file);
+    cache = null;
+    return library();
+  };
+
+  /** 删掉自己的词库，回到随包示例（没有示例就回到空词库）。 */
+  const resetLibrary = async (): Promise<WordLibrary> => {
+    rmSync(options.file, { force: true });
+    cache = null;
+    return library();
   };
 
   return {
@@ -328,6 +467,9 @@ export function createWordEngine(options: { file: string; readConfig: () => Prom
     recipe,
     enrich,
     pageData,
+    library,
+    importLibrary,
+    resetLibrary,
     reload: () => {
       cache = null;
     },

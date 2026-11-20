@@ -4,16 +4,37 @@
  * 这里只负责四个查词工具和设置页，配置写在自己的 data/config.json。
  * 画画子插件通过同一个服务在出图前自动补词。
  *
- * 词库来自鱼仔 PromptForge 的非成人子集，只在本机使用。
+ * 词库是可选的：随包带一份示例词库（prompts.sample.json，CC0-1.0，可自由再分发），
+ * 用户也可以导入自己的 data/prompts.json；两份都没有时页面给导入说明，不报 500。
  * SPDX-License-Identifier: AGPL-3.0-only
  * Additional terms under AGPLv3 Section 7: see LICENSE-ADDITIONAL.
  */
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { Context } from 'whalelife';
 import { WORD_DEFAULT, WORD_KINDS, WORD_LANGS, type WordConfig, type WordEngine } from '../../lib/words.ts';
 
 const PAGE = '/plugins/studio/promptkit/settings';
 const API_CONFIG = '/plugins/studio/promptkit/config';
 const API_RELOAD = '/plugins/studio/promptkit/reload';
+const API_IMPORT = '/plugins/studio/promptkit/import';
+const API_RESET = '/plugins/studio/promptkit/reset-library';
+const API_SAMPLE = '/plugins/studio/promptkit/sample';
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+const SAMPLE_FILE = join(HERE, 'data', 'prompts.sample.json');
+
+type LibraryInfo = {
+  path: string;
+  exists: boolean;
+  sample: boolean;
+  bytes: number;
+  builtAt: string;
+  categories: number;
+  tags: number;
+  broken: boolean;
+};
 
 type PageData = {
   config: WordConfig;
@@ -30,7 +51,11 @@ type PageData = {
   };
   categories: Array<{ id: string; name: string; count: number }>;
   builtAt: string;
+  library: LibraryInfo;
 };
+
+const NO_LIBRARY_HINT =
+  '词库还没准备好：打开「提示词小抄」设置页导入自己的词库，或直接用随包示例词库（data/prompts.sample.json）。';
 
 const KIND_LABEL: Record<string, string> = {
   draw: '画图 draw',
@@ -52,12 +77,12 @@ function json(res: any, status: number, value: unknown) {
   res.end(JSON.stringify(value));
 }
 
-async function readBody(req: any, signal: AbortSignal) {
+async function readBody(req: any, signal: AbortSignal, limit = 64 * 1024) {
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of req) {
     size += Buffer.byteLength(chunk);
-    if (size > 64 * 1024) throw Error('提交的内容太大');
+    if (size > limit) throw Error(size > 1024 * 1024 ? '词库文件太大，上限 8MB' : '提交的内容太大');
     chunks.push(Buffer.from(chunk));
   }
   signal.throwIfAborted();
@@ -70,9 +95,24 @@ async function readBody(req: any, signal: AbortSignal) {
   }
 }
 
-function renderPage(data: PageData) {
+function renderPage(data: PageData, notice = '') {
   const cfg = data.config;
   const s = data.stats;
+  const lib = data.library;
+  const libState = !lib || !lib.exists ? 'none' : lib.sample ? 'sample' : 'own';
+  const libPath = lib?.path || 'data/prompts.json';
+  const libSize = lib?.bytes ? `${(lib.bytes / 1024).toFixed(lib.bytes > 1024 * 1024 ? 0 : 1)} KB` : '—';
+  const banner =
+    libState === 'own'
+      ? `<div class="banner ok">正在用你自己的词库：<code>${esc(libPath)}</code> · ${lib.tags} 条词 · ${libSize}</div>`
+      : libState === 'sample'
+        ? `<div class="banner info">现在用的是<b>随包示例词库</b>（${lib.tags} 条词，CC0-1.0，可自由再分发）。导入自己的词库会覆盖它，随时能再切回来。</div>`
+        : `<div class="banner warn">还没找到词库。在下面「词库」卡片里导入一份，或确认安装包带了 <code>sub/promptkit/data/prompts.sample.json</code>。四个查词工具和自动补词会先空着，画图本身不受影响。</div>`;
+  const brokenHtml =
+    lib?.broken && libState === 'sample'
+      ? `<div class="banner warn">你自己的 <code>${esc(join(HERE, 'data', 'prompts.json'))}</code> 读不出来（不是合法 JSON 或没有可用词条），已经先回退到示例词库；重新导入一份就能覆盖。</div>`
+      : '';
+  const noticeHtml = notice ? `<div class="banner warn">${esc(notice)}</div>` : '';
   const off = new Set(cfg.disabledCategories);
   const layerSet = new Set(cfg.recipeLayers);
   const enrichSet = new Set(cfg.enrichLayers);
@@ -142,9 +182,39 @@ th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line)}
 th{color:var(--muted);font-weight:500;width:130px}
 #msg{min-height:22px;margin-top:12px;font-size:13px;color:var(--accent)}
 #msg.bad{color:#b23c3c}
+#libMsg{min-height:22px;margin-top:12px;font-size:13px;color:var(--accent)}
+#libMsg.bad{color:#b23c3c}
+.banner{padding:10px 14px;border:1px solid var(--line);border-radius:10px;margin:0 0 6px;font-size:13px;background:var(--paper)}
+.banner code{font-size:12px}
+.banner.ok{border-color:#b6dcd6;background:#eef8f6}
+.banner.info{border-color:#cfdcea;background:#f1f6fb}
+.banner.warn{border-color:#e8cfa2;background:#fdf7ea;color:#7a5a1e}
+a.linkbtn{font:inherit;padding:9px 14px;border:1px solid var(--line);border-radius:7px;background:var(--paper);color:var(--ink);text-decoration:none}
 @media(max-width:640px){.grid,.checks{grid-template-columns:1fr}}
 </style></head><body><main>
 <header><div><h1>提示词小抄</h1><p class="sub">${s.categories} 个分类 · ${s.tags} 条词 · 当前启用 ${s.enabledCategories} 个分类 / ${s.enabledTags} 条</p></div></header>
+${banner}${brokenHtml}${noticeHtml}
+
+<section class="card">
+  <h2>词库</h2>
+  <p class="hint">四个查词工具（<code>prompt_categories / prompt_search / prompt_pick / prompt_recipe</code>）和出图前的「自动补词」都读这份词库；不装词库也能画图、拍视频，只是没有这些现成的词。随包的示例词库是自撰的通用词（CC0-1.0，可自由再分发），够跑通流程；换成自己的词库直接覆盖即可，原始私有词库不用进仓库。</p>
+  <table>
+    <tr><th>当前来源</th><td>${libState === 'own' ? '你自己的词库' : libState === 'sample' ? '随包示例词库' : '还没有词库'}</td></tr>
+    <tr><th>文件</th><td><code>${esc(libPath)}</code></td></tr>
+    <tr><th>构建时间</th><td>${esc(lib?.builtAt || '未知')} · ${libSize}</td></tr>
+    <tr><th>词条</th><td>${lib?.tags ?? 0} 条 · ${lib?.categories ?? 0} 个分类</td></tr>
+  </table>
+  <h3>导入自己的词库</h3>
+  <p class="hint">选一个 JSON 文件（上限 8MB），导入后写到 <code>sub/promptkit/data/prompts.json</code>，立即生效。也可以直接把这个文件放进该目录，再点「重新载入数据」。</p>
+  <div class="row" style="margin-top:8px">
+    <input type="file" id="libFile" accept=".json,application/json" style="max-width:340px">
+    <button class="primary" id="libImport">导入词库</button>
+    <a class="linkbtn" href="${API_SAMPLE}" download="prompts.sample.json">下载示例词库</a>
+    <button id="libReset">恢复示例词库</button>
+  </div>
+  <p class="hint" style="margin-top:12px">格式：<code>{"categories":[{"id":"lighting","name":"光影"}],"tags":[{"cat":"lighting","zh":"逆光","en":"backlight"}]}</code>。词库是从外部数据生成的，可以用 <code>node sub/promptkit/scripts/build-data.mjs</code> 按自己的源数据重建；随包示例词库不含成人内容。</p>
+  <div id="libMsg"></div>
+</section>
 
 <section class="card">
   <h2>默认偏好</h2>
@@ -195,10 +265,10 @@ th{color:var(--muted);font-weight:500;width:130px}
 <section class="card">
   <h2>数据</h2>
   <table>
-    <tr><th>词库文件</th><td><code>data/prompts.json</code></td></tr>
+    <tr><th>词库文件</th><td><code>${esc(libPath)}</code>${libState === 'sample' ? '（随包示例）' : ''}</td></tr>
     <tr><th>构建时间</th><td>${esc(s.builtAt || '未知')}</td></tr>
     <tr><th>词条</th><td>${s.tags} 条（启用 ${s.enabledTags} 条）</td></tr>
-    <tr><th>来源</th><td>鱼仔 PromptForge 非成人子集，重建用 <code>node scripts/build-data.mjs</code></td></tr>
+    <tr><th>来源</th><td>随包示例词库为自撰通用词（CC0-1.0）；自己的词库可以用 <code>node sub/promptkit/scripts/build-data.mjs</code> 重建</td></tr>
     <tr><th>自动补词</th><td>${s.autoEnrich ? '开' : '关'} · ${s.enrichKinds.join('、') || '无动作'} · ${s.enrichLayers.join('、') || '无层'} · 最多 ${s.enrichCount} 个</td></tr>
   </table>
   <div class="row">
@@ -211,6 +281,7 @@ th{color:var(--muted);font-weight:500;width:130px}
 <script>
 const $ = (s) => document.querySelector(s);
 const msg = (t, bad) => { const el = $('#msg'); el.textContent = t || ''; el.className = bad ? 'bad' : ''; };
+const libMsg = (t, bad) => { const el = $('#libMsg'); el.textContent = t || ''; el.className = bad ? 'bad' : ''; };
 const cats = () => Array.from(document.querySelectorAll('input[name=cat]'));
 const layers = () => Array.from(document.querySelectorAll('input[name=layer]'));
 const ekinds = () => Array.from(document.querySelectorAll('input[name=ekind]'));
@@ -243,6 +314,26 @@ $('#reload').onclick = async () => {
     msg('已重新载入：' + data.stats.tags + ' 条词，' + data.stats.categories + ' 个分类');
   } catch (e) { msg('载入失败：' + e.message, true); }
 };
+$('#libImport').onclick = async () => {
+  const file = $('#libFile').files && $('#libFile').files[0];
+  if (!file) { libMsg('先在右边选一个 JSON 词库文件', true); return; }
+  if (file.size > 8 * 1024 * 1024) { libMsg('文件太大，上限 8MB', true); return; }
+  let text = '';
+  try { text = await file.text(); } catch (e) { libMsg('读不了这个文件：' + e.message, true); return; }
+  $('#libImport').disabled = true;
+  try {
+    const data = await post('${API_IMPORT}', { content: text });
+    libMsg('已导入：' + data.library.tags + ' 条词 / ' + data.library.categories + ' 个分类');
+    setTimeout(() => location.reload(), 500);
+  } catch (e) { libMsg('导入失败：' + e.message, true); $('#libImport').disabled = false; }
+};
+$('#libReset').onclick = async () => {
+  try {
+    const data = await post('${API_RESET}');
+    libMsg('已切回示例词库：' + data.library.tags + ' 条词');
+    setTimeout(() => location.reload(), 400);
+  } catch (e) { libMsg('操作失败：' + e.message, true); }
+};
 $('#reset').onclick = () => {
   $('#lang').value = '${WORD_DEFAULT.lang}';
   $('#pickCount').value = '${WORD_DEFAULT.pickCount}';
@@ -258,8 +349,50 @@ $('#reset').onclick = () => {
 </main></body></html>`;
 }
 
+function fallbackPageData(path: string): PageData {
+  const cfg = WORD_DEFAULT;
+  return {
+    config: cfg,
+    stats: {
+      categories: 0,
+      enabledCategories: 0,
+      tags: 0,
+      enabledTags: 0,
+      builtAt: '',
+      autoEnrich: cfg.autoEnrich,
+      enrichKinds: cfg.enrichKinds.slice(),
+      enrichLayers: cfg.enrichLayers.slice(),
+      enrichCount: cfg.enrichCount,
+    },
+    categories: [],
+    builtAt: '',
+    library: { path, exists: false, sample: false, bytes: 0, builtAt: '', categories: 0, tags: 0, broken: false },
+  };
+}
+
 export function apply(ctx: Context) {
-  const engine = () => ctx.get('promptkit') as unknown as WordEngine;
+  const engine = () => ctx.get('promptkit') as unknown as WordEngine | undefined;
+
+  /** 页面用：服务没注册或词库读崩都抛，由调用方降级渲染。 */
+  const loadPage = async (): Promise<PageData> => {
+    const eng = engine();
+    if (!eng) throw Error('词库服务没注册');
+    return (await eng.pageData()) as PageData;
+  };
+
+  /** 工具用：没有词库就不硬跑，返回能照着做的说明。 */
+  const guard = async (): Promise<{ status: 'error'; error: string } | null> => {
+    const eng = engine();
+    if (!eng) return { status: 'error', error: NO_LIBRARY_HINT };
+    try {
+      const lib = await eng.library();
+      // 自己的词库坏了但示例能顶上时照样可用，页面横幅会提醒；两条路都没有才报错。
+      if (!lib.tags) return { status: 'error', error: NO_LIBRARY_HINT };
+    } catch {
+      return { status: 'error', error: NO_LIBRARY_HINT };
+    }
+    return null;
+  };
 
   ctx.tools.register({
     name: 'prompt_categories',
@@ -267,7 +400,9 @@ export function apply(ctx: Context) {
     danger: 'safe',
     schema: { type: 'object', properties: {}, additionalProperties: false },
     async run() {
-      const list = await engine().categories();
+      const bad = await guard();
+      if (bad) return bad;
+      const list = await engine()!.categories();
       return { status: 'ok', total: list.reduce((sum, c) => sum + c.count, 0), categories: list };
     },
   });
@@ -289,7 +424,9 @@ export function apply(ctx: Context) {
       additionalProperties: false,
     },
     async run(args: any) {
-      return engine().search(args);
+      const bad = await guard();
+      if (bad) return bad;
+      return engine()!.search(args);
     },
   });
 
@@ -309,7 +446,9 @@ export function apply(ctx: Context) {
       additionalProperties: false,
     },
     async run(args: any) {
-      return engine().pick(args);
+      const bad = await guard();
+      if (bad) return bad;
+      return engine()!.pick(args);
     },
   });
 
@@ -328,21 +467,74 @@ export function apply(ctx: Context) {
       additionalProperties: false,
     },
     async run(args: any) {
-      return engine().recipe(args);
+      const bad = await guard();
+      if (bad) return bad;
+      return engine()!.recipe(args);
     },
   });
 
   ctx.web.page(PAGE, async (_req: any, res: any) => {
-    const data = (await engine().pageData()) as PageData;
+    let data: PageData;
+    let notice = '';
+    try {
+      data = await loadPage();
+    } catch (error: any) {
+      // 词库缺失、引擎没注册、词库 JSON 坏了，都不该把设置页打成 500：降级渲染并给出导入入口。
+      notice = `设置页数据没读到：${String(error?.message ?? error).slice(0, 200)}。下面的「词库」卡片可以导入一份 JSON 再试。`;
+      ctx.logger.warn('提示词小抄设置页降级渲染', { error: String(error?.message ?? error) });
+      data = fallbackPageData(join(HERE, 'data', 'prompts.json'));
+    }
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     res.setHeader('Cache-Control', 'no-store');
-    res.end(renderPage(data));
+    res.end(renderPage(data, notice));
   }, { title: '提示词小抄设置', settings: true, navigation: true });
+
+  ctx.web.api(API_IMPORT, async (req: any, res: any, { signal }: any) => {
+    try {
+      const eng = engine();
+      if (!eng) throw Error(NO_LIBRARY_HINT);
+      const body = await readBody(req, signal, 8 * 1024 * 1024);
+      const content = typeof body?.content === 'string' ? body.content : '';
+      if (!content.trim()) throw Error('没有收到词库内容：请求体要是 {"content":"<JSON 文本>"}');
+      const library = await eng.importLibrary(content);
+      const data = (await eng.pageData()) as PageData;
+      json(res, 200, { ok: true, library, stats: data.stats, categories: data.categories });
+    } catch (error: any) {
+      json(res, 400, { ok: false, error: String(error?.message ?? error).slice(0, 300) });
+    }
+  });
+
+  ctx.web.api(API_RESET, async (_req: any, res: any) => {
+    try {
+      const eng = engine();
+      if (!eng) throw Error(NO_LIBRARY_HINT);
+      const library = await eng.resetLibrary();
+      const data = (await eng.pageData()) as PageData;
+      json(res, 200, { ok: true, library, stats: data.stats });
+    } catch (error: any) {
+      json(res, 400, { ok: false, error: String(error?.message ?? error).slice(0, 300) });
+    }
+  });
+
+  ctx.web.api(API_SAMPLE, async (_req: any, res: any) => {
+    try {
+      const raw = readFileSync(SAMPLE_FILE, 'utf8');
+      res.statusCode = 200;
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      res.setHeader('Content-Disposition', 'attachment; filename="prompts.sample.json"');
+      res.setHeader('Cache-Control', 'no-store');
+      res.end(raw);
+    } catch {
+      json(res, 404, { ok: false, error: '安装包里没有示例词库（sub/promptkit/data/prompts.sample.json）' });
+    }
+  });
 
   ctx.web.api(API_CONFIG, async (req: any, res: any, { signal }: any) => {
     try {
+      const eng = engine();
+      if (!eng) throw Error(NO_LIBRARY_HINT);
       const patch = await readBody(req, signal);
-      const current = (await engine().pageData()) as PageData;
+      const current = (await eng.pageData()) as PageData;
       const known = new Set(current.categories.map((c) => c.id));
       const next: WordConfig = { ...current.config };
       if (patch?.lang !== undefined) {
@@ -380,9 +572,9 @@ export function apply(ctx: Context) {
         next.enrichCount = Math.round(n);
       }
       await ctx.config.save('config.json', next);
-      await engine().reload();
-      const data = (await engine().pageData()) as PageData;
-      json(res, 200, { ok: true, config: next, stats: data.stats });
+      await eng.reload();
+      const data = (await eng.pageData()) as PageData;
+      json(res, 200, { ok: true, config: next, stats: data.stats, library: data.library });
     } catch (error: any) {
       json(res, 400, { ok: false, error: String(error?.message ?? error).slice(0, 300) });
     }
@@ -390,16 +582,18 @@ export function apply(ctx: Context) {
 
   ctx.web.api(API_RELOAD, async (_req: any, res: any) => {
     try {
-      await engine().reload();
-      const data = (await engine().pageData()) as PageData;
-      json(res, 200, { ok: true, stats: data.stats });
+      const eng = engine();
+      if (!eng) throw Error(NO_LIBRARY_HINT);
+      await eng.reload();
+      const data = (await eng.pageData()) as PageData;
+      json(res, 200, { ok: true, stats: data.stats, library: data.library });
     } catch (error: any) {
-      json(res, 500, { ok: false, error: String(error?.message ?? error).slice(0, 300) });
+      json(res, 400, { ok: false, error: String(error?.message ?? error).slice(0, 300) });
     }
   });
 
   ctx.logger.info('提示词小抄已加载', {
     settings: PAGE,
-    note: '词库引擎由父插件 studio 提供，画画子插件在出图前调用',
+    note: '词库可选：自己的 data/prompts.json 优先，其次随包示例词库；画画子插件在出图前调用补词',
   });
 }

@@ -196,23 +196,26 @@ export function apply(ctx: Context) {
 
   // 提示词小抄：词库引擎常驻父级，画画子插件和「提示词小抄」设置页共用。
   // 词库与补词配置归子插件（sub/promptkit/data），父级只读，不写用户数据。
-  const wordsFile = join(HERE, 'sub', 'promptkit', 'data', 'prompts.json');
-  const wordsConfig = join(HERE, 'sub', 'promptkit', 'data', 'config.json');
-  if (existsSync(wordsFile)) {
-    ctx.provide(
-      'promptkit',
-      createWordEngine({
-        file: wordsFile,
-        readConfig: async () => {
-          try {
-            return JSON.parse(readFileSync(wordsConfig, 'utf8'));
-          } catch {
-            return null;
-          }
-        },
-      }),
-    );
-  }
+  // 词库是可选的：优先 data/prompts.json（用户导入），没有就读随包附带的 prompts.sample.json；
+  // 两个都没有也照样注册服务，引擎返回 0 条词，页面提示导入，不会 500。
+  const wordsDir = join(HERE, 'sub', 'promptkit', 'data');
+  const wordsFile = join(wordsDir, 'prompts.json');
+  const wordsSample = join(wordsDir, 'prompts.sample.json');
+  const wordsConfig = join(wordsDir, 'config.json');
+  ctx.provide(
+    'promptkit',
+    createWordEngine({
+      file: wordsFile,
+      sample: existsSync(wordsSample) ? wordsSample : undefined,
+      readConfig: async () => {
+        try {
+          return JSON.parse(readFileSync(wordsConfig, 'utf8'));
+        } catch {
+          return null;
+        }
+      },
+    }),
+  );
 
   ctx.tools.register({
     name: 'studio_status',

@@ -1,9 +1,11 @@
 # 提示词小抄（promptkit）
 
-画室的子插件（`plugins/studio/sub/promptkit`）。词库来自鱼仔 PromptForge 的**非成人子集**，
-给生图链路补细节：姿势、表情、构图、镜头、光影、场景、天气、道具、风格。
+画室的子插件（`plugins/studio/sub/promptkit`）。给生图链路补细节：姿势、表情、构图、镜头、光影、场景、天气、道具、风格。
 
-不做的事：不换她的脸、不改年龄、不碰服装程度分级；NSFW 四类（身体/服装/姿势/道具）和人物基础/身材/面部整类已在构建时剔除。
+词库是**可选**的：随包带一份自撰的示例词库（130 条通用词，CC0-1.0，可自由再分发），装完即用；
+想用自己的词库就在设置页导入，或把 `prompts.json` 放进 `data/`。自己词库的原始版权数据只留本地，不进仓库。
+
+不做的事：不换她的脸、不改年龄、不碰服装程度分级；示例词库不含成人内容，自己的词库也不建议放。
 
 ## 工具
 
@@ -31,29 +33,27 @@
 
 ## 结构
 
-- 词库引擎：`plugins/studio/lib/words.ts`，由父插件 `ctx.provide('promptkit', …)` 暴露；
-- 本插件：只注册工具和设置页，配置写在自己的 `data/config.json`；
+- 词库引擎：`plugins/studio/lib/words.ts`，由父插件**始终** `ctx.provide('promptkit', …)` 暴露（缺词库也注册）；
+- 本插件：注册工具、设置页和导入 API，配置写在自己的 `data/config.json`；
 - 画画子插件：在 `optionalDepends` 里声明 `promptkit`，用 `ctx.optional('promptkit', …)` 拿到服务。
 
-父级只读本插件的 `data/prompts.json` 和 `data/config.json`，不写。
+词库查找顺序：`data/prompts.json`（用户自己的）→ `data/prompts.sample.json`（随包示例）→ 空词库。
+父级平时只读；只有用户在设置页点「导入词库」时才会写 `data/prompts.json`。
 
 ## 数据与重建
 
-- 数据文件：`data/prompts.json`（分类 17 个、词条约 1900，启用约 1790）
-- 来源：`D:\dafeiyu\fish-extra\lib\forge-data.json`（只读，不改源文件）
-- 重建：`node scripts/build-data.mjs`
+- **随包示例**：`data/prompts.sample.json`，11 个分类、130 条通用词，自撰，CC0-1.0；
+- **自己的词库**：`data/prompts.json`（不入 git），可以从自己的源数据重建；
+- 重建：`node scripts/build-data.mjs`（读 `FORGE_SRC` 指向的源数据，默认 `D:/dafeiyu/fish-extra/lib/forge-data.json`，只读不改源文件）。
 
-过滤规则在 `scripts/build-data.mjs` 顶部：
-
-- 整类剔除：`base` / `body` / `face` / `nsfwbody` / `nsfwcloth` / `nsfwact` / `nsfwplay` / `monster`
-- 词条黑名单：中文按子串（裸、内衣、胸、大腿、床、浴室、蕾丝、泳装……），英文按单词边界（nude、lingerie、sex、bed、shower……）
-
-改完重跑脚本，在设置页点「重新载入数据」即可，不用重启。
+`scripts/build-data.mjs` 的过滤规则在文件顶部（整类剔除与词条黑名单），是给私有词库用的；
+示例词库是手写的通用词，不含成人内容，也不依赖这个脚本。
 
 ## 设置页
 
 控制台 → 画室 → 提示词小抄，或直接打开 `/plugins/studio/promptkit/settings`：
 
+- **词库**：看当前用的是自己的还是随包示例；选 JSON 文件导入（上限 8MB）、下载示例词库、恢复示例词库
 - **默认语言 / 默认挑词数量**：工具没传 `lang` / `count` 时用
 - **生图自动补词**：总开关、每次最多补几个（1–5）
 - **给哪些动作补**：draw / selfie / snapshot / paint，默认四个都开
@@ -79,4 +79,5 @@
 
 ## 许可
 
-词库来源为鱼仔项目的私有数据，未随本项目再分发第三方素材；只在本机使用。
+随包示例词库 `data/prompts.sample.json` 为本项目自撰，CC0-1.0，可自由复制、修改、再分发。
+用户自己导入的 `data/prompts.json` 版权归其来源方，不进本仓库、不再分发。
