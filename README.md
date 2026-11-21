@@ -44,7 +44,7 @@
 {"categories":[{"id":"lighting","name":"光影"}],"tags":[{"cat":"lighting","zh":"逆光","en":"backlight"}]}
 ```
 
-**哪些功能需要词库**：四个查词工具（`prompt_categories` / `prompt_search` / `prompt_pick` / `prompt_recipe`）和出图前的「自动补词」。画图、拍视频、模型清单、按模型拼工作流都不依赖词库，只是少了一层现成的词。从自己的源数据重建词库用 `node sub/promptkit/scripts/build-data.mjs --full`（全量，含 NSFW）或不带参数的 `node sub/promptkit/scripts/build-data.mjs`（安全子集）；校验格式用 `node sub/promptkit/scripts/check-data.mjs`。引擎两种字段名都认（`categories` 与源数据的 `cats`）。
+**哪些功能需要词库**：四个查词工具（`prompt_categories` / `prompt_search` / `prompt_pick` / `prompt_recipe`）和出图前的「自动补词」。画图、拍视频、模型清单、按模型拼工作流都不依赖词库，只是少了一层现成的词。从自己的源数据重建词库用 `node sub/promptkit/scripts/build-data.mjs --full`（全量，含 NSFW）或不带参数的 `node sub/promptkit/scripts/build-data.mjs`（安全子集）；校验格式用 `check-data.mjs`，跑一遍约定自测用 `selftest.mjs`（都不需要宿主）。引擎两种字段名都认（`categories` 与源数据的 `cats`）。负面分类只给 `prompt_search` 用，不进随机挑词和配方。
 
 ## 本机部署与模型推荐
 

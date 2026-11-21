@@ -67,7 +67,7 @@ const SAFE_STYLE = new Set([
 /** 分级/成人相关词一律不参与自动补词（词库里还留着评级标签，但补词时跳过）。 */
 const UNSAFE = /(explicit|sensitive|nsfw|nude|naked|lingerie|underwear|swimsuit|bikini|cleavage|sex|shower)/i;
 
-export type WordCategory = { id: string; name: string };
+export type WordCategory = { id: string; name: string; icon?: string; count?: number };
 export type WordTag = { cat: string; zh: string; en: string };
 
 type Data = {
@@ -357,12 +357,17 @@ export function createWordEngine(options: { file: string; sample?: string; readC
     const lang = WORD_LANGS.includes(args?.lang) ? args.lang : cfg.lang;
     const cat = args?.category ? String(args.category) : '';
     const data = load();
+    if (cat === 'negative') {
+      return { status: 'error', error: '负面词不参与随机挑词：挑出来只能当正面的画面描述，写负面提示词请用 prompt_search。' };
+    }
+    // 负面分类就算在设置里勾上了，也只给 search 用，不进随机挑词的池子。
+    const pickable = enabled.filter((c) => c.id !== 'negative');
     let pool: WordTag[] = [];
     if (cat) {
-      if (!enabled.some((c) => c.id === cat)) return { status: 'error', error: unavailableReason(cat, cfg) };
+      if (!pickable.some((c) => c.id === cat)) return { status: 'error', error: unavailableReason(cat, cfg) };
       pool = data.byCat.get(cat) ?? [];
     } else {
-      for (const c of enabled) pool = pool.concat(data.byCat.get(c.id) ?? []);
+      for (const c of pickable) pool = pool.concat(data.byCat.get(c.id) ?? []);
     }
     if (!pool.length) return { status: 'error', error: '没有可用的词' };
     const picked = sample(pool, count);
@@ -379,7 +384,8 @@ export function createWordEngine(options: { file: string; sample?: string; readC
     const cfg = await cfgOf();
     const enabled = new Set(enabledList(cfg).map((c) => c.id));
     const lang = WORD_LANGS.includes(args?.lang) ? args.lang : cfg.lang;
-    let layersList = cfg.recipeLayers.filter((id) => enabled.has(id));
+    // 负面词不进配方：拼出来是正面描述，混进 low quality 之类的词只会互相打架。
+    let layersList = cfg.recipeLayers.filter((id) => enabled.has(id) && id !== 'negative');
     if (!layersList.length) layersList = DEFAULT_LAYERS.filter((id) => enabled.has(id));
     const data = load();
     const words: string[] = [];
@@ -486,7 +492,14 @@ export function createWordEngine(options: { file: string; sample?: string; readC
     if (!Array.isArray(parsed?.tags) || !parsed.tags.length) throw Error('缺少 tags 数组');
     const categories: WordCategory[] = rawCats
       .filter((c: any) => c && typeof c.id === 'string' && c.id)
-      .map((c: any) => ({ id: String(c.id), name: String(c.name ?? c.id) }));
+      .map((c: any) => {
+        // 分类上的 icon / count 不影响查词，但没必要在导入时丢掉（源数据里有 icon，例如 🔞）。
+        const out: WordCategory = { id: String(c.id), name: String(c.name ?? c.id) };
+        if (typeof c.icon === 'string' && c.icon) out.icon = c.icon;
+        const count = Number(c.count);
+        if (Number.isFinite(count) && count > 0) out.count = Math.round(count);
+        return out;
+      });
     if (!categories.length) throw Error('categories 里没有合法的分类');
     const ids = new Set(categories.map((c) => c.id));
     const tags: WordTag[] = parsed.tags

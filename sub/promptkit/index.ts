@@ -152,11 +152,13 @@ function renderPage(data: PageData, notice = '') {
   const layerRows = data.categories
     .map((c) => {
       const locked = c.nsfw && !cfg.allowNsfw;
-      return `<label class="check${locked ? ' locked' : ''}"><input type="checkbox" name="layer" value="${esc(c.id)}"${
-        layerSet.has(c.id) ? ' checked' : ''
-      }${locked ? ' disabled' : ''} data-nsfw="${c.nsfw ? '1' : '0'}"><span>${esc(
-        c.name,
-      )}<em>${esc(c.id)}${nsfwHint(locked, c.nsfw)}</em></span></label>`;
+      const blocked = c.id === 'negative';
+      const why = blocked ? ' · 负面词不参与配方' : nsfwHint(locked, c.nsfw);
+      return `<label class="check${locked ? ' locked' : ''}${blocked ? ' disabled' : ''}"><input type="checkbox" name="layer" value="${esc(
+        c.id,
+      )}"${layerSet.has(c.id) ? ' checked' : ''}${
+        locked || blocked ? ' disabled' : ''
+      } data-nsfw="${c.nsfw ? '1' : '0'}"><span>${esc(c.name)}<em>${esc(c.id)}${why}</em></span></label>`;
     })
     .join('');
   const kindRows = WORD_KINDS.map(
@@ -296,7 +298,7 @@ ${banner}${brokenHtml}${noticeHtml}${nsfwBanner}
 
 <section class="card">
   <h2>启用的分类</h2>
-  <p class="hint">取消勾选的分类不再出现在 <code>prompt_categories / prompt_search / prompt_pick</code> 里；数据文件不动，随时能勾回来。</p>
+  <p class="hint">取消勾选的分类不再出现在 <code>prompt_categories / prompt_search / prompt_pick</code> 里；数据文件不动，随时能勾回来。负面分类勾上后只影响 <code>prompt_search</code>（写负面提示词时用），不会进随机挑词和配方。</p>
   <div class="checks">${catRows}</div>
 </section>
 
@@ -501,6 +503,25 @@ export function apply(ctx: Context) {
     return null;
   };
 
+  /**
+   * 工具结果里附带「这次读的是哪份词库」。
+   * 词库坏了会静默回退示例，不说明的话调用方会以为 2742 条都在用。
+   */
+  const libraryNote = async (): Promise<{ library?: unknown; notice?: string }> => {
+    try {
+      const lib = await engine()!.library();
+      const parts: string[] = [];
+      if (lib.broken) {
+        parts.push('你自己的 data/prompts.json 读不出来（格式不对或没有可用词条），已回退到随包示例词库');
+      } else if (lib.sample) {
+        parts.push(`当前用的是随包示例词库（${lib.tags} 条），自己的词库还没导入`);
+      }
+      return { library: lib, ...(parts.length ? { notice: parts.join('；') } : {}) };
+    } catch {
+      return {};
+    }
+  };
+
   ctx.tools.register({
     name: 'prompt_categories',
     description:
@@ -512,7 +533,12 @@ export function apply(ctx: Context) {
       const bad = await guard();
       if (bad) return bad;
       const list = await engine()!.categories();
-      return { status: 'ok', total: list.reduce((sum, c) => sum + c.count, 0), categories: list };
+      return {
+        status: 'ok',
+        total: list.reduce((sum, c) => sum + c.count, 0),
+        categories: list,
+        ...(await libraryNote()),
+      };
     },
   });
 
@@ -536,7 +562,8 @@ export function apply(ctx: Context) {
     async run(args: any) {
       const bad = await guard();
       if (bad) return bad;
-      return engine()!.search(args);
+      const result = await engine()!.search(args);
+      return { ...result, ...(await libraryNote()) };
     },
   });
 
@@ -559,7 +586,8 @@ export function apply(ctx: Context) {
     async run(args: any) {
       const bad = await guard();
       if (bad) return bad;
-      return engine()!.pick(args);
+      const result = await engine()!.pick(args);
+      return { ...result, ...(await libraryNote()) };
     },
   });
 
@@ -580,7 +608,8 @@ export function apply(ctx: Context) {
     async run(args: any) {
       const bad = await guard();
       if (bad) return bad;
-      return engine()!.recipe(args);
+      const result = await engine()!.recipe(args);
+      return { ...result, ...(await libraryNote()) };
     },
   });
 
@@ -673,7 +702,8 @@ export function apply(ctx: Context) {
       }
       if (patch?.recipeLayers !== undefined) {
         if (!Array.isArray(patch.recipeLayers)) throw Error('recipeLayers 要给数组');
-        next.recipeLayers = patch.recipeLayers.map(String).filter((id: string) => known.has(id));
+        // 负面分类不参与配方（拼出来是正面描述，混进负面词只会互相打架）。
+        next.recipeLayers = patch.recipeLayers.map(String).filter((id: string) => known.has(id) && id !== 'negative');
       }
       if (patch?.autoEnrich !== undefined) {
         if (typeof patch.autoEnrich !== 'boolean') throw Error('autoEnrich 只能是 true / false');
