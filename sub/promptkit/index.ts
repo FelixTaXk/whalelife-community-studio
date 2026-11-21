@@ -191,7 +191,6 @@ th{color:var(--muted);font-weight:500;width:130px}
 .banner.ok{border-color:#b6dcd6;background:#eef8f6}
 .banner.info{border-color:#cfdcea;background:#f1f6fb}
 .banner.warn{border-color:#e8cfa2;background:#fdf7ea;color:#7a5a1e}
-a.linkbtn{font:inherit;padding:9px 14px;border:1px solid var(--line);border-radius:7px;background:var(--paper);color:var(--ink);text-decoration:none}
 @media(max-width:640px){.grid,.checks{grid-template-columns:1fr}}
 </style></head><body><main>
 <header><div><h1>提示词小抄</h1><p class="sub">${s.categories} 个分类 · ${s.tags} 条词 · 当前启用 ${s.enabledCategories} 个分类 / ${s.enabledTags} 条</p></div></header>
@@ -211,7 +210,7 @@ ${banner}${brokenHtml}${noticeHtml}
   <div class="row" style="margin-top:8px">
     <input type="file" id="libFile" accept=".json,application/json" style="max-width:340px">
     <button class="primary" id="libImport">导入词库</button>
-    <a class="linkbtn" href="${API_SAMPLE}" download="prompts.sample.json">下载示例词库</a>
+    <button id="libDownload">下载示例词库</button>
     <button id="libReset">恢复示例词库</button>
   </div>
   <p class="hint" style="margin-top:12px">格式：<code>{"categories":[{"id":"lighting","name":"光影"}],"tags":[{"cat":"lighting","zh":"逆光","en":"backlight"}]}</code>。词库是从外部数据生成的，可以用 <code>node sub/promptkit/scripts/build-data.mjs</code> 按自己的源数据重建；随包示例词库不含成人内容。</p>
@@ -328,6 +327,27 @@ $('#libImport').onclick = async () => {
     libMsg('已导入：' + data.library.tags + ' 条词 / ' + data.library.categories + ' 个分类');
     setTimeout(() => location.reload(), 500);
   } catch (e) { libMsg('导入失败：' + e.message, true); $('#libImport').disabled = false; }
+};
+$('#libDownload').onclick = async () => {
+  // 宿主的 web.api 只收 POST，直接 <a href> 发 GET 会 404；这里用页面内 POST 再自己存文件。
+  try {
+    const res = await fetch('${API_SAMPLE}', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const text = await res.text();
+    let data = null;
+    try { data = JSON.parse(text); } catch { throw new Error('返回的不是 JSON'); }
+    if (!data || !Array.isArray(data.tags)) throw new Error(data && data.error ? data.error : '内容不对');
+    const blob = new Blob([text], { type: 'application/json;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'prompts.sample.json';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 500);
+    libMsg('已保存 prompts.sample.json（' + data.tags.length + ' 条词）');
+  } catch (e) { libMsg('下载失败：' + e.message, true); }
 };
 $('#libReset').onclick = async () => {
   try {
@@ -518,10 +538,18 @@ export function apply(ctx: Context) {
     }
   });
 
-  ctx.web.api(API_SAMPLE, async (_req: any, res: any) => {
+  ctx.web.api(API_SAMPLE, async (req: any, res: any) => {
     try {
       const file = [SAMPLE_FILE, SAMPLE_LEGACY].find((path) => existsSync(path));
       if (!file) throw Error('missing');
+      // 宿主的 web.api 只挂 POST；页面用 POST 取，这里把请求体读掉，避免连接挂着。
+      try {
+        for await (const _chunk of req) {
+          /* 不需要内容 */
+        }
+      } catch {
+        /* 没有请求体也无所谓 */
+      }
       const raw = readFileSync(file, 'utf8');
       res.statusCode = 200;
       res.setHeader('Content-Type', 'application/json; charset=utf-8');
