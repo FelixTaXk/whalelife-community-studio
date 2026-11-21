@@ -63,7 +63,7 @@ export function selfiePrompt(options: ShootOptions = {}): { prompt: string; nega
   const place = scene ? `, ${scene}` : ', in her room by the window';
   const look = lookWithOutfit(outfit);
   const face = mood ? `, ${mood}` : '';
-  const night = /late at night|night|dark|evening|dusk/.test(scene);
+  const night = /late at night|night|dark|evening/.test(scene);
   const camera = night
     ? CAMERA_SELFIE.replace('natural window light', 'dim warm lamp light, dark room, soft phone-screen glow')
     : CAMERA_SELFIE;
