@@ -3,6 +3,7 @@
  * Additional terms under AGPLv3 Section 7: see LICENSE-ADDITIONAL.
  */
 import { existsSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { parseSize } from './util.ts';
 
@@ -34,15 +35,61 @@ export type VideoCfg = {
   workflow: string;
 };
 
+/** 一个可选的人设外观。空着就按参考图/通用人物出图，不再写死某个角色。 */
+export type PersonaCfg = {
+  /** 固定外貌，英文更跟得住；不要写衣服和道具 */
+  appearance: string;
+  /** 没接衣柜、也没显式传 outfit 时的默认衣服 */
+  defaultOutfit: string;
+  /** 每张都带的标志性道具，例如 a film camera around the neck；留空就不加 */
+  prop: string;
+  /** 自拍没有日程时的默认场景 */
+  selfieFallbackScene: string;
+  /** 随手拍没有日程时的默认场景 */
+  snapshotFallbackScene: string;
+  /** 画画时追加的画者说明；留空用通用业余画者文案 */
+  painterStyle: string;
+  /** 画画没有指定主体时的默认主体 */
+  paintFallbackSubject: string;
+  /** 随机画的主体池；留空用内置通用池 */
+  randomSubjects: string[];
+  /** 画画的随机风格池；留空用 watercolor/sketch/illustration */
+  paintStyles: string[];
+};
+
+/** 日程 / 衣柜是可选外部插件；路径和 personId 都可以按安装环境改。 */
+export type ScheduleCfg = {
+  enabled: boolean;
+  /** 相对 plugins 根目录，或绝对路径 */
+  dataDir: string;
+};
+export type WardrobeCfg = {
+  enabled: boolean;
+  /** 相对 plugins 根目录，或绝对路径 */
+  dataDir: string;
+  /** 衣柜 state 里的 persona key；留空自动取第一个 */
+  personaId: string;
+};
+export type IntegrationsCfg = {
+  schedule: ScheduleCfg;
+  wardrobe: WardrobeCfg;
+  /** 随手拍没有日程时用来补细节的英文短语池 */
+  sceneDetails: string[];
+};
+
 export type StudioConfig = {
   defaultBackend: string;
   python: string;
   outputDir: string;
-  /** 她的定妆照（本地图片路径）：自拍/画她时当参考图，锁同一张脸 */
+  /** 人设参考图（本地图片路径）：自拍/画人设时当参考图，锁同一张脸 */
   faceRef: string;
-  /** 她的角色 LoRA（文件名）：没有定妆照时用它锁脸 */
+  /** 人设 LoRA（文件名）：没有参考图时用它锁脸 */
   faceLora: string;
   faceLoraStrength: number;
+  /** 本机 ComfyUI 根目录；留空自动探测 */
+  comfyRoot: string;
+  persona: PersonaCfg;
+  integrations: IntegrationsCfg;
   backends: Record<string, BackendCfg>;
   video: VideoCfg;
 };
@@ -63,6 +110,30 @@ const backend = (patch: Partial<BackendCfg> = {}): BackendCfg => ({
   ...patch,
 });
 
+const DEFAULT_RANDOM_SUBJECTS = [
+  'a glass of water on a windowsill, afternoon light',
+  'the stairwell after rain, half the lights dead',
+  'a desk with scattered pencils and a half-finished sketch',
+  'a cat sleeping on a chair by the window',
+  'the street outside the window at dusk',
+  'a bowl of noodles on the kitchen table, steam rising',
+  'the balcony with laundry drying in the wind',
+  'a bicycle seat wet from the rain, leaves on the ground',
+  'the corner of a classroom, chalk dust in the sun',
+  'a stack of books and a small vase of flowers',
+];
+const DEFAULT_SCENE_DETAILS = [
+  'steam from a cup on the desk',
+  'a half-finished sketch and scattered pencils',
+  'laundry drying on the balcony',
+  'light falling across the floor',
+  'a chair by the window, nobody sitting in it',
+  'chalk dust floating in the sunlight',
+  'a row of empty desks by the window',
+  'a wet bicycle seat after the rain',
+  'traffic lights just coming on',
+];
+
 export const DEFAULTS: StudioConfig = {
   defaultBackend: 'comfy',
   python: '',
@@ -70,8 +141,25 @@ export const DEFAULTS: StudioConfig = {
   faceRef: '',
   faceLora: '',
   faceLoraStrength: 0.85,
+  comfyRoot: '',
+  persona: {
+    appearance: '',
+    defaultOutfit: '',
+    prop: '',
+    selfieFallbackScene: 'by the window',
+    snapshotFallbackScene: 'a quiet corner by the window',
+    painterStyle: '',
+    paintFallbackSubject: 'the street outside the window after rain',
+    randomSubjects: DEFAULT_RANDOM_SUBJECTS.slice(),
+    paintStyles: ['watercolor', 'sketch', 'illustration'],
+  },
+  integrations: {
+    schedule: { enabled: false, dataDir: 'schedule/data/days' },
+    wardrobe: { enabled: false, dataDir: 'schedule/sub/wardrobe/data', personaId: '' },
+    sceneDetails: DEFAULT_SCENE_DETAILS.slice(),
+  },
   backends: {
-    comfy: backend({ baseUrl: 'http://127.0.0.1:8188', workflowsDir: 'workflows', canvasDir: '', modelsDir: 'D:\\ComfyUI\\models' }),
+    comfy: backend({ baseUrl: 'http://127.0.0.1:8188', workflowsDir: '', canvasDir: '', modelsDir: '' }),
     sdwebui: backend({ enabled: false, baseUrl: 'http://127.0.0.1:7860' }),
     openai: backend({ enabled: false, baseUrl: 'https://api.openai.com/v1', model: 'gpt-image-1', size: '1024x1024', timeoutMs: 180_000 }),
     gemini: backend({ enabled: false, baseUrl: 'https://generativelanguage.googleapis.com', model: 'gemini-2.5-flash-image', timeoutMs: 180_000 }),
@@ -79,9 +167,9 @@ export const DEFAULTS: StudioConfig = {
   },
   video: {
     backend: 'comfy',
-    width: 480,
-    height: 832,
-    length: 97,
+    width: 864,
+    height: 480,
+    length: 124,
     timeoutMs: 2_400_000,
     workflow: '',
   },
@@ -98,6 +186,12 @@ const clampInt = (value: any, min: number, max: number, fallback: number): numbe
 
 const text = (value: any, fallback = '', max = 500): string =>
   typeof value === 'string' ? value.trim().slice(0, max) : fallback;
+
+const list = (value: any, fallback: string[], maxItems = 30, maxLen = 200): string[] => {
+  if (!Array.isArray(value)) return fallback.slice();
+  const items = value.map((item) => text(item, '', maxLen)).filter(Boolean).slice(0, maxItems);
+  return items.length ? items : fallback.slice();
+};
 
 const http = (value: any, fallback: string): string => {
   const raw = text(value, fallback, 300).replace(/\/+$/, '');
@@ -119,6 +213,36 @@ export function normalize(raw: any): StudioConfig {
   out.faceLoraStrength = Number.isFinite(Number(source.faceLoraStrength))
     ? Math.max(0, Math.min(1.5, Number(source.faceLoraStrength)))
     : DEFAULTS.faceLoraStrength;
+  out.comfyRoot = text(source.comfyRoot, '', 400);
+
+  const persona = source.persona && typeof source.persona === 'object' ? source.persona : {};
+  out.persona = {
+    appearance: text(persona.appearance, '', 600),
+    defaultOutfit: text(persona.defaultOutfit, '', 400),
+    prop: text(persona.prop, '', 300),
+    selfieFallbackScene: text(persona.selfieFallbackScene, DEFAULTS.persona.selfieFallbackScene, 400) || DEFAULTS.persona.selfieFallbackScene,
+    snapshotFallbackScene: text(persona.snapshotFallbackScene, DEFAULTS.persona.snapshotFallbackScene, 400) || DEFAULTS.persona.snapshotFallbackScene,
+    painterStyle: text(persona.painterStyle, '', 400),
+    paintFallbackSubject: text(persona.paintFallbackSubject, DEFAULTS.persona.paintFallbackSubject, 400) || DEFAULTS.persona.paintFallbackSubject,
+    randomSubjects: list(persona.randomSubjects, DEFAULTS.persona.randomSubjects),
+    paintStyles: list(persona.paintStyles, DEFAULTS.persona.paintStyles, 10, 40),
+  };
+
+  const integrations = source.integrations && typeof source.integrations === 'object' ? source.integrations : {};
+  const schedule = integrations.schedule && typeof integrations.schedule === 'object' ? integrations.schedule : {};
+  const wardrobe = integrations.wardrobe && typeof integrations.wardrobe === 'object' ? integrations.wardrobe : {};
+  out.integrations = {
+    schedule: {
+      enabled: typeof schedule.enabled === 'boolean' ? schedule.enabled : DEFAULTS.integrations.schedule.enabled,
+      dataDir: text(schedule.dataDir, DEFAULTS.integrations.schedule.dataDir, 400) || DEFAULTS.integrations.schedule.dataDir,
+    },
+    wardrobe: {
+      enabled: typeof wardrobe.enabled === 'boolean' ? wardrobe.enabled : DEFAULTS.integrations.wardrobe.enabled,
+      dataDir: text(wardrobe.dataDir, DEFAULTS.integrations.wardrobe.dataDir, 400) || DEFAULTS.integrations.wardrobe.dataDir,
+      personaId: text(wardrobe.personaId, '', 100),
+    },
+    sceneDetails: list(integrations.sceneDetails, DEFAULTS.integrations.sceneDetails),
+  };
 
   const incoming = source.backends && typeof source.backends === 'object' ? source.backends : {};
   for (const name of BACKEND_NAMES) {
@@ -176,6 +300,25 @@ export function applyPatch(current: StudioConfig, patch: any): StudioConfig {
     if (patch.faceLora !== undefined) merged.faceLora = patch.faceLora;
     if (patch.faceLoraStrength !== undefined) merged.faceLoraStrength = patch.faceLoraStrength;
     if (patch.python !== undefined) merged.python = patch.python;
+    if (patch.comfyRoot !== undefined) merged.comfyRoot = patch.comfyRoot;
+    if (patch.persona && typeof patch.persona === 'object') {
+      for (const key of ['appearance', 'defaultOutfit', 'prop', 'selfieFallbackScene', 'snapshotFallbackScene', 'painterStyle', 'paintFallbackSubject', 'randomSubjects', 'paintStyles']) {
+        if (patch.persona[key] !== undefined) merged.persona[key] = patch.persona[key];
+      }
+    }
+    if (patch.integrations && typeof patch.integrations === 'object') {
+      if (patch.integrations.schedule && typeof patch.integrations.schedule === 'object') {
+        for (const key of ['enabled', 'dataDir']) {
+          if (patch.integrations.schedule[key] !== undefined) merged.integrations.schedule[key] = patch.integrations.schedule[key];
+        }
+      }
+      if (patch.integrations.wardrobe && typeof patch.integrations.wardrobe === 'object') {
+        for (const key of ['enabled', 'dataDir', 'personaId']) {
+          if (patch.integrations.wardrobe[key] !== undefined) merged.integrations.wardrobe[key] = patch.integrations.wardrobe[key];
+        }
+      }
+      if (patch.integrations.sceneDetails !== undefined) merged.integrations.sceneDetails = patch.integrations.sceneDetails;
+    }
     if (patch.backends && typeof patch.backends === 'object') {
       for (const name of BACKEND_NAMES) {
         const item = patch.backends[name];
@@ -196,6 +339,20 @@ export function applyPatch(current: StudioConfig, patch: any): StudioConfig {
   return normalize(merged);
 }
 
+/** ComfyUI 根目录：配置 → COMFY_ROOT → 用户目录常见位置。返回空串表示还没配。 */
+export function defaultComfyRoot(cfg?: Pick<StudioConfig, 'comfyRoot'> | null): string {
+  const configured = String(cfg?.comfyRoot ?? '').trim();
+  if (configured) return configured;
+  const env = String(process.env.COMFY_ROOT ?? '').trim();
+  if (env) return env;
+  const home = homedir();
+  const candidates = [join(home, 'ComfyUI'), join(home, 'comfyui'), join(home, 'Documents', 'ComfyUI')];
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate;
+  }
+  return '';
+}
+
 /** 找 Python：配置 → 环境变量 → ComfyUI 自带 → 常见位置 → PATH。找不到返回空串。 */
 export function resolvePython(cfg: StudioConfig, comfyRootHint = ''): string {
   const store = /[\\/]WindowsApps[\\/]/i;
@@ -206,8 +363,7 @@ export function resolvePython(cfg: StudioConfig, comfyRootHint = ''): string {
   const roots = [
     String(process.env.COMFY_ROOT ?? '').trim(),
     comfyRootHint,
-    'D:\\ComfyUI',
-    'C:\\ComfyUI',
+    defaultComfyRoot(cfg),
   ].filter(Boolean);
   for (const root of roots) {
     for (const rel of [['venv', 'Scripts', 'python.exe'], ['python_embeded', 'python.exe'], ['python_embedded', 'python.exe']]) {

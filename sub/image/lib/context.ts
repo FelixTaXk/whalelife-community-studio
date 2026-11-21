@@ -1,20 +1,26 @@
 /*! 画室 · 自拍/随手拍的场景与穿搭解析。
  *
- * 优先级：用户显式参数 > 日程/衣柜 > 默认。
- * 日程、衣柜是可选插件：读不到就跳过，不抛错、不阻断出图。
- * 只读它们的 data 文件，不改、不写。
+ * 所有外部数据都是可选的：
+ *   - 日程：integration.schedule.dataDir 指向一个放着 YYYY-MM-DD.json 的目录
+ *   - 衣柜：integration.wardrobe.dataDir 指向含 state.json / catalog.json 的目录
+ * 路径可写绝对路径，也可写相对插件根目录的路径。读不到就跳过，不阻断出图。
  *
  * SPDX-License-Identifier: AGPL-3.0-only
  * Additional terms under AGPLv3 Section 7: see LICENSE-ADDITIONAL.
  */
 import { existsSync, readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PLUGINS_ROOT = join(HERE, '..', '..', '..', '..');
 
 const rootOf = (root?: string) => (root && root.trim() ? root : PLUGINS_ROOT);
+const dataDirOf = (root: string | undefined, dir: string) => {
+  const value = String(dir ?? '').trim();
+  if (!value) return '';
+  return isAbsolute(value) ? value : join(rootOf(root), value);
+};
 
 type PlanItem = { id?: string; start?: string; end?: string; title?: string; place?: string; kind?: string; status?: string };
 
@@ -37,6 +43,21 @@ export type ShotContext = {
   mood?: string;
   schedule?: ScheduleMoment;
   notes: string[];
+};
+
+export type ScheduleSource = { enabled: boolean; dataDir: string };
+export type WardrobeSource = { enabled: boolean; dataDir: string; personaId: string };
+
+export type SceneOptions = {
+  root?: string;
+  schedule?: ScheduleSource;
+  wardrobe?: WardrobeSource;
+  sceneDetails?: string[];
+  defaultOutfit?: string;
+  selfieFallbackScene?: string;
+  snapshotFallbackScene?: string;
+  randomSubjects?: string[];
+  paintStyles?: string[];
 };
 
 const text = (value: any, max = 300) => String(value ?? '').trim().slice(0, max);
@@ -62,16 +83,19 @@ const hhmm = (value?: string) => {
 
 const readJson = (path: string) => {
   try {
-    if (!existsSync(path)) return null;
+    if (!path || !existsSync(path)) return null;
     return JSON.parse(readFileSync(path, 'utf8'));
   } catch {
     return null;
   }
 };
 
-export function readSchedule(now = new Date(), root?: string): ScheduleMoment | null {
+export function readSchedule(now = new Date(), options: SceneOptions = {}): ScheduleMoment | null {
+  const source = options.schedule;
+  if (!source?.enabled) return null;
   const date = dateKey(now);
-  const plan = readJson(join(rootOf(root), 'schedule', 'data', 'days', `${date}.json`));
+  const dir = dataDirOf(options.root, source.dataDir);
+  const plan = readJson(join(dir, `${date}.json`));
   const items: PlanItem[] = Array.isArray(plan?.items) ? plan.items : [];
   if (!items.length) return null;
   const minute = minuteOfDay(now);
@@ -95,13 +119,24 @@ export function readSchedule(now = new Date(), root?: string): ScheduleMoment | 
   };
 }
 
-export function readWardrobeOutfit(date: string, itemId?: string, root?: string): { id: string; en: string; name: string; tier: string } | null {
-  const state = readJson(join(rootOf(root), 'schedule', 'sub', 'wardrobe', 'data', 'state.json'));
-  const day = state?.personas?.whale?.days?.[date];
+export function readWardrobeOutfit(
+  date: string,
+  itemId?: string,
+  options: SceneOptions = {},
+): { id: string; en: string; name: string; tier: string } | null {
+  const source = options.wardrobe;
+  if (!source?.enabled) return null;
+  const dir = dataDirOf(options.root, source.dataDir);
+  const state = readJson(join(dir, 'state.json'));
+  const personas = state?.personas && typeof state.personas === 'object' ? state.personas : {};
+  const preferred = source.personaId ? personas[source.personaId] : null;
+  const fallback = Object.values(personas)[0] as any;
+  const persona = preferred || fallback;
+  const day = persona?.days?.[date];
   if (!day) return null;
   const id = text(itemId && day.blocks?.[itemId] ? day.blocks[itemId] : day.base, 40);
   if (!id) return null;
-  const catalog = readJson(join(rootOf(root), 'schedule', 'sub', 'wardrobe', 'data', 'catalog.json'));
+  const catalog = readJson(join(dir, 'catalog.json'));
   const item = Array.isArray(catalog?.items) ? catalog.items.find((entry: any) => entry?.id === id) : null;
   if (!item) return null;
   return {
@@ -114,29 +149,27 @@ export function readWardrobeOutfit(date: string, itemId?: string, root?: string)
 
 const placeEn = (place: string, title: string) => {
   const value = `${place} ${title}`;
-  if (/学校|教室|上课/.test(value)) return 'at school';
-  if (/家|房间|卧室|客厅|厨房|阳台/.test(value)) return 'at home';
-  if (/路|街|公交|地铁|车站/.test(value)) return 'on the way';
-  if (/公园|操场|户外|出去|走走|散步/.test(value)) return 'outside';
-  if (/店|超市|商场|图书/.test(value)) return 'in a shop';
-  if (/修照片|修图|自由|在家/.test(value)) return 'at home';
+  if (/学校|教室|上课|school|class/.test(value)) return 'at school';
+  if (/家|房间|卧室|客厅|厨房|阳台|home|room|bedroom|kitchen|balcony/.test(value)) return 'at home';
+  if (/路|街|公交|地铁|车站|street|road|station|subway/.test(value)) return 'on the way';
+  if (/公园|操场|户外|出去|走走|散步|park|outside|walk/.test(value)) return 'outside';
+  if (/店|超市|商场|图书|shop|store|market|bookstore/.test(value)) return 'in a shop';
   return place ? `at ${place}` : '';
 };
 
 const activityEn = (title: string) => {
   if (!title) return '';
-  if (/起床|醒来/.test(title)) return 'just woke up, still in bed';
-  if (/洗漱|洗澡|浴室/.test(title)) return 'in the bathroom';
-  if (/准备睡|睡前|睡觉/.test(title)) return 'getting ready for bed';
-  if (/睡/.test(title)) return 'sleeping';
-  if (/早餐|午餐|晚餐|吃|面|饭/.test(title)) return 'having a meal';
-  if (/画|速写|水彩/.test(title)) return 'drawing at her desk';
-  if (/修照片|修图|剪辑/.test(title)) return 'editing photos on her laptop';
-  if (/作业|学习|复习|看书|读/.test(title)) return 'studying at her desk';
-  if (/上课|课/.test(title)) return 'in class';
-  if (/跑步|运动|锻炼/.test(title)) return 'after a run, a little out of breath';
-  if (/回家|放学/.test(title)) return 'just got home';
-  if (/散步|逛|走走|出去/.test(title)) return 'walking outside';
+  if (/起床|醒来|wake/.test(title)) return 'just woke up, still in bed';
+  if (/洗漱|洗澡|浴室|bath|shower/.test(title)) return 'in the bathroom';
+  if (/准备睡|睡前|睡觉|bedtime|sleep/.test(title)) return 'getting ready for bed';
+  if (/早餐|午餐|晚餐|吃|面|饭|breakfast|lunch|dinner|meal/.test(title)) return 'having a meal';
+  if (/画|速写|水彩|draw|sketch|paint/.test(title)) return 'drawing at a desk';
+  if (/修照片|修图|剪辑|edit|photo/.test(title)) return 'editing photos on a laptop';
+  if (/作业|学习|复习|看书|读|study|homework|read/.test(title)) return 'studying at a desk';
+  if (/上课|课|class|lesson/.test(title)) return 'in class';
+  if (/跑步|运动|锻炼|run|workout|exercise/.test(title)) return 'after a run, a little out of breath';
+  if (/回家|放学|home/.test(title)) return 'just got home';
+  if (/散步|逛|走走|出去|walk|stroll/.test(title)) return 'walking outside';
   return '';
 };
 
@@ -153,81 +186,70 @@ const timeEn = (now: Date) => {
 
 const weatherEn = (weather: string) => {
   if (!weather) return '';
-  if (/雨/.test(weather)) return 'rainy, the ground still wet';
-  if (/雪/.test(weather)) return 'snowing';
-  if (/晴/.test(weather)) return 'clear light';
-  if (/阴|多云/.test(weather)) return 'soft gray light';
-  if (/风/.test(weather)) return 'a little windy';
+  if (/雨|rain/.test(weather)) return 'rainy, the ground still wet';
+  if (/雪|snow/.test(weather)) return 'snowing';
+  if (/晴|clear|sunny/.test(weather)) return 'clear light';
+  if (/阴|多云|cloud|overcast/.test(weather)) return 'soft gray light';
+  if (/风|wind/.test(weather)) return 'a little windy';
   return '';
 };
 
-const homeDetails = [
+const DEFAULT_SAFE_DETAILS = [
   'steam from a cup on the desk',
-  'a half-finished sketch and scattered pencils',
-  'laundry drying on the balcony',
   'light falling across the floor',
   'a chair by the window, nobody sitting in it',
-];
-const schoolDetails = [
-  'chalk dust floating in the sunlight',
-  'a row of empty desks by the window',
-  'the stairwell, half the lights dead',
-  'a notebook left open on a desk',
-];
-const streetDetails = [
   'a wet bicycle seat after the rain',
-  'a puddle reflecting the sky',
   'traffic lights just coming on',
-  'the curb, leaves stuck to the ground',
 ];
 
 const pick = <T>(items: T[]): T => items[Math.floor(Math.random() * items.length)];
 
-const detailFor = (place: string) => {
-  const value = place || '';
-  if (/学校|教室/.test(value)) return pick(schoolDetails);
-  if (/路|街|公交|地铁|出去|走走|散步/.test(value)) return pick(streetDetails);
-  return pick(homeDetails);
-};
+const detailFor = (details: string[]) => pick(details.length ? details : DEFAULT_SAFE_DETAILS);
 
-export function resolveSelfieContext(args: any = {}, now = new Date(), root?: string): ShotContext {
+const fallbackScene = (value: string | undefined, fallback: string) => text(value) || fallback;
+
+export function resolveSelfieContext(args: any = {}, now = new Date(), options: SceneOptions = {}): ShotContext {
   const notes: string[] = [];
-  const schedule = readSchedule(now, root);
+  const schedule = readSchedule(now, options);
   const explicitScene = text(args?.scene);
-  const explicitOutfit = text(args?.outfit);
+  const explicitOutfit = text(args?.outfit, 300);
   const explicitMood = text(args?.mood);
+  const genericOutfit = text(options.defaultOutfit, 300);
   let scene = explicitScene;
   let outfit = explicitOutfit;
   let mood = explicitMood;
 
   if (!scene) {
     if (schedule) {
-      const where = placeEn(schedule.place, schedule.title) || 'at home';
-      const doing = activityEn(schedule.title);
-      const weather = weatherEn(schedule.weather);
+      const where = placeEn(schedule.place, schedule.title) || text(schedule.place) || '';
+      const doing = activityEn(schedule.title) || (where ? '' : schedule.title);
+      const weather = weatherEn(schedule.weather) || text(schedule.weather, 40);
       scene = [where, doing, weather, timeEn(now)].filter(Boolean).join(', ');
       notes.push(`场景自动填：${schedule.start}–${schedule.end} ${schedule.title}${schedule.place ? ' @' + schedule.place : ''}`);
     } else {
-      scene = ['in her room by the window', timeEn(now)].filter(Boolean).join(', ');
-      notes.push('场景自动填：默认窗边（日程未启用）');
+      scene = [fallbackScene(options.selfieFallbackScene, 'by the window'), timeEn(now)].filter(Boolean).join(', ');
+      notes.push('场景自动填：默认（日程未启用或没有当前段）');
     }
   }
 
   if (!outfit && schedule) {
-    const found = readWardrobeOutfit(schedule.date, schedule.id, root);
+    const found = readWardrobeOutfit(schedule.date, schedule.id, options);
     if (found) {
       outfit = found.en || found.name;
       notes.push(`穿搭自动填：${found.id} ${found.name}`);
-    } else {
-      notes.push('穿搭默认：校服（衣柜没有这一段的记录）');
+    } else if (genericOutfit) {
+      outfit = genericOutfit;
+      notes.push('穿搭默认：人设配置');
     }
-  } else if (!outfit) {
-    notes.push('穿搭默认：校服（衣柜未启用）');
+  } else if (!outfit && genericOutfit) {
+    outfit = genericOutfit;
+    notes.push('穿搭默认：人设配置');
   }
 
   if (!mood) {
-    if (weatherEn(schedule?.weather ?? '')) {
-      mood = weatherEn(schedule!.weather);
+    const weather = weatherEn(schedule?.weather ?? '') || text(schedule?.weather, 40);
+    if (weather) {
+      mood = weather;
       notes.push('神态自动填：按天气');
     } else if (now.getHours() < 5) {
       mood = 'awake too late, a little tired';
@@ -244,31 +266,32 @@ export function resolveSelfieContext(args: any = {}, now = new Date(), root?: st
   return { scene, outfit, mood, schedule: schedule ?? undefined, notes };
 }
 
-export function resolveSnapshotContext(args: any = {}, now = new Date(), root?: string): ShotContext {
+export function resolveSnapshotContext(args: any = {}, now = new Date(), options: SceneOptions = {}): ShotContext {
   const notes: string[] = [];
-  const schedule = readSchedule(now, root);
+  const schedule = readSchedule(now, options);
   const explicitScene = text(args?.scene);
   let scene = explicitScene;
   if (!scene) {
     if (schedule) {
-      const where = placeEn(schedule.place, schedule.title) || 'at home';
-      const weather = weatherEn(schedule.weather);
-      scene = [where, detailFor(`${schedule.place} ${schedule.title}`), weather, timeEn(now)].filter(Boolean).join(', ');
+      const where = placeEn(schedule.place, schedule.title) || text(schedule.place) || '';
+      const weather = weatherEn(schedule.weather) || text(schedule.weather, 40);
+      const detail = detailFor(options.sceneDetails ?? []);
+      scene = [where, detail, weather, timeEn(now)].filter(Boolean).join(', ');
       notes.push(`场景自动填：${schedule.start}–${schedule.end} ${schedule.title}${schedule.place ? ' @' + schedule.place : ''}`);
     } else {
-      const hour = now.getHours();
-      const where = hour >= 22 || hour < 7 ? 'at home, a corner of her room' : hour >= 8 && hour < 17 ? 'on the way, a street corner' : 'at home, by the window';
-      scene = [where, pick(where.includes('street') || where.includes('outside') ? streetDetails : homeDetails), timeEn(now)].join(', ');
-      notes.push('场景自动填：默认（日程未启用）');
+      scene = [fallbackScene(options.snapshotFallbackScene, 'a quiet corner by the window'), detailFor(options.sceneDetails ?? []), timeEn(now)]
+        .filter(Boolean)
+        .join(', ');
+      notes.push('场景自动填：默认（日程未启用或没有当前段）');
     }
   }
   return { scene, schedule: schedule ?? undefined, notes };
 }
 
-export const RANDOM_SUBJECTS = [
+export const DEFAULT_RANDOM_SUBJECTS = [
   'a glass of water on a windowsill, afternoon light',
   'the stairwell after rain, half the lights dead',
-  'her desk with scattered pencils and a half-finished sketch',
+  'a desk with scattered pencils and a half-finished sketch',
   'a cat sleeping on a chair by the window',
   'the street outside the window at dusk',
   'a bowl of noodles on the kitchen table, steam rising',
@@ -280,10 +303,12 @@ export const RANDOM_SUBJECTS = [
 
 export const RANDOM_STYLES = ['watercolor', 'sketch', 'illustration'] as const;
 
-export function randomSubject() {
-  return pick(RANDOM_SUBJECTS);
+export function randomSubject(subjects?: string[]) {
+  const pool = Array.isArray(subjects) && subjects.length ? subjects : DEFAULT_RANDOM_SUBJECTS;
+  return pick(pool);
 }
 
-export function randomPaintingStyle() {
-  return pick([...RANDOM_STYLES]);
+export function randomPaintingStyle(styles?: string[]) {
+  const pool = Array.isArray(styles) && styles.length ? styles : RANDOM_STYLES.slice();
+  return pick(pool);
 }

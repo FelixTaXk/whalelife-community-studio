@@ -194,9 +194,9 @@ export function renderVideoSettings(data: VideoSettingsInput) {
   </div>
   <h3>画面</h3>
   <div class="grid">
-    <label class="f"><span>宽</span><input id="width" type="number" min="64" max="2048" step="8" value="${Number(video.width) || 480}"></label>
-    <label class="f"><span>高</span><input id="height" type="number" min="64" max="2048" step="8" value="${Number(video.height) || 832}"></label>
-    <label class="f"><span>帧数</span><input id="length" type="number" min="1" max="500" value="${Number(video.length) || 97}"><i>97 帧约 4 秒（24fps），按工作流要求改</i></label>
+    <label class="f"><span>宽</span><input id="width" type="number" min="64" max="2048" step="8" value="${Number(video.width) || 864}"></label>
+    <label class="f"><span>高</span><input id="height" type="number" min="64" max="2048" step="8" value="${Number(video.height) || 480}"></label>
+    <label class="f"><span>帧数</span><input id="length" type="number" min="1" max="500" value="${Number(video.length) || 124}"><i>帧数按工作流要求填；有的模型要 4n+1（如 97 或 121）</i></label>
   </div>
   <div class="row"><button class="primary" id="saveVideo">保存视频设置</button><span class="hint">宽高和帧数会被写进请求；工作流里写死的值不受影响</span></div>
 </section>

@@ -14,6 +14,7 @@ import { existsSync, mkdirSync, openSync, readFileSync, statfsSync, writeFileSyn
 import { join, isAbsolute, dirname } from 'node:path';
 import { promisify } from 'node:util';
 import os from 'node:os';
+import { defaultComfyRoot } from './config.ts';
 
 const execFileAsync = promisify(execFile);
 
@@ -183,10 +184,9 @@ function candidateRoots(hint: string) {
   const list = [
     String(process.env.COMFY_ROOT ?? '').trim(),
     hint,
-    'D:\\ComfyUI',
-    'C:\\ComfyUI',
-    'D:\\AI\\ComfyUI',
+    defaultComfyRoot(),
     join(os.homedir(), 'ComfyUI'),
+    join(os.homedir(), 'Documents', 'ComfyUI'),
   ].filter(Boolean);
   const seen = new Set<string>();
   return list.filter((item) => {
@@ -230,10 +230,15 @@ export async function probe(options: { baseUrl?: string; modelsDirHint?: string;
     comfyHealth(baseUrl),
   ]);
 
-  const diskPath = foundRoot || (process.platform === 'win32' ? 'D:\\' : '/');
+  const diskPath = foundRoot || os.homedir();
   const disk = probeDisk(diskPath);
   const modelsDir = foundRoot ? join(foundRoot, 'models') : options.modelsDirHint || '';
-  const venvPython = foundRoot ? [join(foundRoot, 'venv', 'Scripts', 'python.exe'), join(foundRoot, 'python_embeded', 'python.exe')].find((p) => existsSync(p)) || '' : '';
+  const venvPython = foundRoot ? [
+    join(foundRoot, 'venv', 'Scripts', 'python.exe'),
+    join(foundRoot, 'venv', 'bin', 'python'),
+    join(foundRoot, 'python_embeded', 'python.exe'),
+    join(foundRoot, 'python_embedded', 'python.exe'),
+  ].find((p) => existsSync(p)) || '' : '';
 
   return {
     os: { platform: process.platform, arch: process.arch, release: os.release(), hostname: os.hostname() },
@@ -525,7 +530,7 @@ export async function startComfy(root: string, dataDir: string, baseUrl = 'http:
 /** 一键部署：git clone → venv → torch → requirements → 起服务。整个过程后台跑，状态落盘。 */
 export async function deploy(root: string, dataDir: string, options: { baseUrl?: string } = {}): Promise<DeployState> {
   if (busy) throw Error('已经有一个部署任务在跑');
-  if (!isAbsolute(root)) throw Error('安装目录要给绝对路径，例如 D:\\ComfyUI');
+  if (!isAbsolute(root)) throw Error('安装目录要给绝对路径，例如用户目录下的 ComfyUI');
   const baseUrl = options.baseUrl || 'http://127.0.0.1:8188';
   mkdirSync(join(dataDir, 'logs'), { recursive: true });
   const logPath = join(dataDir, 'logs', 'deploy.log');

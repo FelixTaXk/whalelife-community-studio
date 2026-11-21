@@ -10,7 +10,7 @@ import { dirname, isAbsolute, join } from 'node:path';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import type { Context } from 'whalelife';
-import { applyPatch, BACKEND_NAMES, normalize, publicConfig, resolvePython, type StudioConfig } from './lib/config.ts';
+import { applyPatch, BACKEND_NAMES, defaultComfyRoot, normalize, publicConfig, resolvePython, type StudioConfig } from './lib/config.ts';
 import { describeSlots, inferMapping } from './lib/comfy-workflow.ts';
 import { ComfyClient } from './lib/comfy.ts';
 import { buildWorkflow } from './lib/graph.ts';
@@ -53,14 +53,12 @@ export type StudioService = {
   generate(input: any, signal?: AbortSignal): Promise<GenResult>;
 };
 
-/** ComfyUI 的画布工作流目录：配置优先，否则按常见安装位置猜。 */
-function guessDir(kind: 'workflows' | 'models'): string {
-  const roots = [String(process.env.COMFY_ROOT ?? '').trim(), 'D:\\ComfyUI', 'C:\\ComfyUI'].filter(Boolean);
-  for (const root of roots) {
-    const candidate = kind === 'workflows' ? join(root, 'user', 'default', 'workflows') : join(root, 'models');
-    if (existsSync(candidate)) return candidate;
-  }
-  return '';
+/** ComfyUI 的画布工作流目录：配置优先，否则按用户目录/环境变量猜。 */
+function guessDir(kind: 'workflows' | 'models', cfg?: StudioConfig): string {
+  const root = defaultComfyRoot(cfg);
+  if (!root) return '';
+  const candidate = kind === 'workflows' ? join(root, 'user', 'default', 'workflows') : join(root, 'models');
+  return existsSync(candidate) ? candidate : '';
 }
 
 export function apply(ctx: Context) {
@@ -84,9 +82,9 @@ export function apply(ctx: Context) {
   const pathsOf = async () => {
     const cfg = await readConfig();
     const configured = String(cfg.backends.comfy.canvasDir ?? '').trim();
-    const canvasDir = configured ? abs(configured, '') : guessDir('workflows');
+    const canvasDir = configured ? abs(configured, '') : guessDir('workflows', cfg);
     const configuredModels = String(cfg.backends.comfy.modelsDir ?? '').trim();
-    const modelsDir = configuredModels ? abs(configuredModels, '') : guessDir('models');
+    const modelsDir = configuredModels ? abs(configuredModels, '') : guessDir('models', cfg);
     return {
       dataDir,
       pluginsRoot: dirname(HERE),
@@ -95,7 +93,7 @@ export function apply(ctx: Context) {
       canvasDir: canvasDir && existsSync(canvasDir) ? canvasDir : '',
       modelsDir: modelsDir && existsSync(modelsDir) ? modelsDir : '',
       mappingsDir: join(dataDir, 'mappings'),
-      python: resolvePython(cfg, process.env.COMFY_ROOT ?? ''),
+      python: resolvePython(cfg, cfg.comfyRoot),
       script: join(HERE, 'imgtool.py'),
     };
   };
@@ -428,7 +426,7 @@ export function apply(ctx: Context) {
     },
     run: async (args: any) => {
       const cfg = await readConfig();
-      const info = await probe({ baseUrl: cfg.backends.comfy.baseUrl, modelsDirHint: cfg.backends.comfy.modelsDir, pythonHint: cfg.python, root: args?.root });
+      const info = await probe({ baseUrl: cfg.backends.comfy.baseUrl, modelsDirHint: cfg.backends.comfy.modelsDir, pythonHint: cfg.python, root: args?.root || cfg.comfyRoot });
       return {
         status: 'ok',
         ...info,
@@ -457,7 +455,7 @@ export function apply(ctx: Context) {
     },
     run: async (args: any) => {
       const cfg = await readConfig();
-      const info = await probe({ baseUrl: cfg.backends.comfy.baseUrl, modelsDirHint: cfg.backends.comfy.modelsDir, pythonHint: cfg.python, root: args?.root });
+      const info = await probe({ baseUrl: cfg.backends.comfy.baseUrl, modelsDirHint: cfg.backends.comfy.modelsDir, pythonHint: cfg.python, root: args?.root || cfg.comfyRoot });
       let inv: ModelInventory | undefined;
       try {
         inv = await service.models({ refresh: true });
@@ -500,7 +498,7 @@ export function apply(ctx: Context) {
       type: 'object',
       properties: {
         action: { type: 'string', enum: ['status', 'start', 'install'], description: 'status 查状态（默认）；start 只启动；install 全量部署' },
-        root: { type: 'string', description: '安装目录，默认 D:\\ComfyUI' },
+        root: { type: 'string', description: '安装目录；留空用设置里的 comfyRoot，再留空用用户目录下的 ComfyUI' },
         confirm: { type: 'boolean', description: 'install / start 必须显式传 true' },
       },
       additionalProperties: false,
@@ -514,7 +512,8 @@ export function apply(ctx: Context) {
       }
       if (args?.confirm !== true) return { status: 'error', error: `${action} 会动磁盘和网络，要传 confirm: true` };
       if (deployBusy()) return { status: 'error', error: '已有部署任务在跑，先用 status 看进度' };
-      const root = (String(args?.root ?? '').trim() || readDeployState(dataDir).root || 'D:\\ComfyUI');
+      const root = String(args?.root ?? '').trim() || readDeployState(dataDir).root || defaultComfyRoot(cfg);
+      if (!root) return { status: 'error', error: '没有 ComfyUI 安装目录：请传 root，或先在设置里填 comfyRoot' };
       const task = action === 'start' ? startComfy(root, dataDir, cfg.backends.comfy.baseUrl) : deploy(root, dataDir, { baseUrl: cfg.backends.comfy.baseUrl });
       void task
         .then(async (state) => {
@@ -595,7 +594,7 @@ export function apply(ctx: Context) {
     BASE + 'setup',
     async (_req, res, { signal }) => {
       const cfg = await readConfig();
-      const info = await probe({ baseUrl: cfg.backends.comfy.baseUrl, modelsDirHint: cfg.backends.comfy.modelsDir, pythonHint: cfg.python });
+      const info = await probe({ root: cfg.comfyRoot, baseUrl: cfg.backends.comfy.baseUrl, modelsDirHint: cfg.backends.comfy.modelsDir, pythonHint: cfg.python });
       signal.throwIfAborted();
       let inv: ModelInventory | undefined;
       try {
@@ -622,7 +621,7 @@ export function apply(ctx: Context) {
     try {
       await readBody(req, signal);
       const cfg = await readConfig();
-      const info = await probe({ baseUrl: cfg.backends.comfy.baseUrl, modelsDirHint: cfg.backends.comfy.modelsDir, pythonHint: cfg.python });
+      const info = await probe({ root: cfg.comfyRoot, baseUrl: cfg.backends.comfy.baseUrl, modelsDirHint: cfg.backends.comfy.modelsDir, pythonHint: cfg.python });
       let inv: ModelInventory | undefined;
       try {
         inv = await service.models({ refresh: true });
@@ -650,8 +649,9 @@ export function apply(ctx: Context) {
       const body = await readBody(req, signal);
       if (deployBusy()) return json(res, 409, { ok: false, error: '已有部署任务在跑，先看进度' });
       const action = String(body?.action ?? body?.mode ?? 'install');
-      const root = String(body?.root ?? '').trim() || 'D:\\ComfyUI';
       const cfg = await readConfig();
+      const root = String(body?.root ?? '').trim() || defaultComfyRoot(cfg);
+      if (!root) return json(res, 400, { ok: false, error: '没有 ComfyUI 安装目录，请先在设置里填 comfyRoot' });
       const task =
         action === 'start'
           ? startComfy(root, dataDir, cfg.backends.comfy.baseUrl)

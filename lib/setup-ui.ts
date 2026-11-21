@@ -60,7 +60,7 @@ function recCards(r: Recommendation) {
 
 export function renderSetup(data: { probe: SystemProbe; rec: Recommendation; state: DeployState & { logTail?: string }; busy: boolean; error?: string }) {
   const p = data.probe;
-  const root = data.state.root || p.comfy.root || 'D:\\ComfyUI';
+  const root = data.state.root || p.comfy.root || '';
   const busy = data.busy || ['installing', 'starting'].includes(data.state.state);
   return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>画室 · 本机部署</title>
@@ -112,7 +112,7 @@ ${data.error ? `<div class="banner warn">${esc(data.error)}</div>` : ''}
   <h2>一键部署 / 启动 ComfyUI</h2>
   <p class="hint">用 git + venv 装官方 ComfyUI：克隆 → 建 venv → 按显卡驱动装 torch（CUDA 12.4 / 12.1 / 11.8）→ 装 requirements → 起 8188。首次下载约 2–4G，耗时看网速；日志在 <code>data/logs/deploy.log</code>。</p>
   <div class="row">
-    <input id="root" value="${esc(root)}" placeholder="D:\\ComfyUI">
+    <input id="root" value="${esc(root)}" placeholder="用户目录下的 ComfyUI">
     <button class="primary" id="install"${busy ? ' disabled' : ''}>一键部署</button>
     <button id="start"${busy ? ' disabled' : ''}>只启动</button>
     <button id="status">刷新状态</button>

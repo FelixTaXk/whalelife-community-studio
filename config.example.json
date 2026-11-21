@@ -1,0 +1,56 @@
+{
+  "defaultBackend": "comfy",
+  "python": "",
+  "outputDir": "data/out",
+  "faceRef": "",
+  "faceLora": "",
+  "faceLoraStrength": 0.85,
+  "comfyRoot": "",
+  "persona": {
+    "appearance": "",
+    "defaultOutfit": "",
+    "prop": "",
+    "selfieFallbackScene": "by the window",
+    "snapshotFallbackScene": "a quiet corner by the window",
+    "painterStyle": "",
+    "paintFallbackSubject": "the street outside the window after rain",
+    "randomSubjects": [
+      "a glass of water on a windowsill, afternoon light",
+      "the stairwell after rain, half the lights dead",
+      "a desk with scattered pencils and a half-finished sketch"
+    ],
+    "paintStyles": ["watercolor", "sketch", "illustration"]
+  },
+  "integrations": {
+    "schedule": {
+      "enabled": false,
+      "dataDir": "schedule/data/days"
+    },
+    "wardrobe": {
+      "enabled": false,
+      "dataDir": "schedule/sub/wardrobe/data",
+      "personaId": ""
+    },
+    "sceneDetails": [
+      "steam from a cup on the desk",
+      "light falling across the floor"
+    ]
+  },
+  "backends": {
+    "comfy": {
+      "enabled": true,
+      "baseUrl": "http://127.0.0.1:8188",
+      "workflow": "",
+      "workflowsDir": "",
+      "canvasDir": "",
+      "modelsDir": ""
+    }
+  },
+  "video": {
+    "backend": "comfy",
+    "width": 864,
+    "height": 480,
+    "length": 124,
+    "workflow": ""
+  }
+}

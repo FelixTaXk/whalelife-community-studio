@@ -261,7 +261,7 @@ export function buildWorkflow(spec: BuildSpec, inv: ModelInventory): BuiltWorkfl
 /* ── MOSS-Image Edit：带参考图的锁脸路径 ─────────────────────────────
  *
  * 本机已有 moss_image_edit_lora_rank_64_bf16 和 TextEncodeMOSSImageEdit，
- * 所以「记住她长什么样」不需要训角色 LoRA：把一张定妆照当参考图喂进去就行。
+ * 所以「记住同一个人长什么样」不需要训角色 LoRA：把一张定妆照当参考图喂进去就行。
  * 参考图走 TextEncodeMOSSImageEdit 的 vae 入参（它自己会编码成 reference_latents），
  * 不用再接 ReferenceLatent。图片键是点号形式 images.image_0（ComfyUI V3 autogrow 的写法，
  * 写成 {"images":{"image_0":…}} 会被判 required_input_missing）。
@@ -309,10 +309,10 @@ export function buildMossEditWorkflow(spec: EditSpec, inv: ModelInventory): Buil
   const clip = pairFor('moss', inv.clips.map((item) => item.name), 'clip');
   if (!clip) return fail('没找到 MOSS 配的文本编码器（qwen3.5_*）');
   const vae = pairFor('moss', inv.vaes.map((item) => item.name), 'vae');
-  if (!vae) return fail('没找到 MOSS 配的 VAE（flux2-vae_*）');
+  if (!vae) return fail('没找到 MOSS 配的 VAE（优先 flux 系 VAE）');
 
   const editLora = inv.loras.find((item) => /moss.*edit/i.test(item.name))?.name;
-  if (!editLora) return fail('没找到 MOSS 的 edit LoRA（loras 里 moss_image_edit_*）');
+  if (!editLora) return fail('没找到 MOSS 的 edit LoRA（loras 里名字带 moss 和 edit 的那份）');
   const accel = findAccel('moss', inv.loras.map((item) => item.name));
 
   const d = { ...DEFAULTS.moss };

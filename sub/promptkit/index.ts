@@ -651,7 +651,7 @@ export function apply(ctx: Context) {
     name: 'prompt_pick',
     description:
       '按分类随机挑几个词，用来给自拍/随手拍/画图加姿势、表情、构图、光影、场景、道具。' +
-      '挑出来的 en 直接填进 selfie 的 scene/mood/outfit 或 draw 的 prompt；只补画面细节，不改她本人的长相和年龄设定。' +
+      '挑出来的 en 直接填进 selfie 的 scene/mood/outfit 或 draw 的 prompt；只补画面细节，不改人物原本的长相和年龄设定。' +
       '成人（NSFW）分类默认不参与随机，需先在设置页打开开关。',
     danger: 'safe',
     schema: {

@@ -177,7 +177,7 @@ export function pairFor(
   kind: 'vae' | 'clip',
 ): string | null {
   const patterns: Record<string, RegExp[]> = {
-    moss: kind === 'vae' ? [/flux2[-_]?vae/i, /moss.*vae/i] : [/qwen3[._]?5/i, /qwen.*(vl|text)/i],
+    moss: kind === 'vae' ? [/flux.*vae/i, /moss.*vae/i] : [/qwen.*(vl|text|9b|8b)/i, /qwen3/i],
     qwen: kind === 'vae' ? [/qwen.*vae/i, /qwen_image.*vae/i] : [/qwen3vl[_-]?8b/i, /qwen3.?vl.*(small|8b)/i, /qwen3.?vl/i],
     flux: kind === 'vae' ? [/(^|[-_])ae\./i, /flux.*vae/i, /flux_ae/i] : [/t5xxl/i, /clip_l/i],
     sdxl: kind === 'vae' ? [/sdxl.*vae/i, /sdxl_vae/i] : [],
