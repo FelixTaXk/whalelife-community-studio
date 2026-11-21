@@ -39,6 +39,7 @@ const NEGATIVE_PHOTO =
   'anime, 3d render, doll-like, plastic skin, airbrushed, deformed hands, extra fingers, ' +
   'text, watermark, signature, low quality, blurry';
 const NEGATIVE_SELFIE = `${NEGATIVE_PHOTO}, full body, full-length portrait, wide shot`;
+const NEGATIVE_SNAPSHOT = `${NEGATIVE_PHOTO}, people, person, crowd, hands`;
 
 const NEGATIVE_PAINT = 'photo, photorealistic, 3d render, text, watermark, signature, low quality, messy lines';
 
@@ -96,7 +97,7 @@ export function snapshotPrompt(options: ShootOptions = {}): { prompt: string; ne
   }
   return {
     prompt: `${scene}${detail}, no people, ${style === 'photo' ? CAMERA_PHOTO : CAMERA_FILM}`,
-    negative: NEGATIVE_PHOTO,
+    negative: NEGATIVE_SNAPSHOT,
   };
 }
 
