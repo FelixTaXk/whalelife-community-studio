@@ -10,6 +10,7 @@ import { backendName, runBackend, type ProviderContext } from '../../lib/provide
 import { requestOf } from '../../lib/request.ts';
 import { SIZE_FOR, paintPrompt, selfiePrompt, snapshotPrompt, type ShootKind } from './lib/look.ts';
 import { runImgtool } from '../../lib/media.ts';
+import { renderImageSettings } from '../../lib/sub-settings.ts';
 import { describeTask, TaskBox } from '../../lib/tasks.ts';
 import type { GenRequest, GenResult } from '../../lib/types.ts';
 
@@ -19,10 +20,13 @@ const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
 
 type StudioService = {
   config(): Promise<any>;
+  save(patch: any): Promise<any>;
   paths(): Promise<{ dataDir: string; outDir: string; workflowsDir: string; canvasDir: string; modelsDir: string; mappingsDir: string; python: string; script: string }>;
   workflows(options?: { kind?: 'image' | 'video' }): Promise<
     Array<{ name: string; format: 'api' | 'canvas'; kind?: 'image' | 'video'; slots?: string; notes?: string[]; error?: string }>
   >;
+  models(options?: { refresh?: boolean }): Promise<any>;
+  health(name?: string): Promise<any>;
 };
 
 /** 画室子插件「提示词小抄」暴露的可选服务；没装或停用时按原文出图。 */
@@ -640,6 +644,72 @@ export async function apply(ctx: Context) {
         hint: '把 name 传给 draw 的 workflow；想换默认就改设置页的「工作流」。',
       };
     },
+  });
+
+  const readJsonBody = async (req: any, signal?: AbortSignal) => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    for await (const chunk of req) {
+      size += Buffer.byteLength(chunk);
+      if (size > 64 * 1024) throw Error('提交的内容太大');
+      chunks.push(Buffer.from(chunk));
+    }
+    signal?.throwIfAborted();
+    const raw = Buffer.concat(chunks).toString('utf8').trim();
+    return raw ? JSON.parse(raw) : {};
+  };
+
+  ctx.web.page('/plugins/studio/image/settings', async (_req: any, res: any) => {
+    const studioSvc = studio();
+    const cfg = await studioSvc.config();
+    const paths = await studioSvc.paths();
+    let workflows: any[] = [];
+    let models: any = {};
+    let health: any = null;
+    try {
+      workflows = await studioSvc.workflows({ kind: 'image' });
+    } catch {
+      workflows = [];
+    }
+    try {
+      models = await studioSvc.models({});
+    } catch {
+      models = {};
+    }
+    try {
+      health = await studioSvc.health();
+    } catch (error: any) {
+      health = { online: false, reason: String(error?.message ?? error).slice(0, 200) };
+    }
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-store');
+    res.end(renderImageSettings({ cfg, paths, workflows, models, health }));
+  }, { title: '画画设置', settings: true, navigation: true });
+
+  ctx.web.api('/plugins/studio/image/settings/save', async (req: any, res: any, { signal }: any) => {
+    const json = (code: number, value: any) => {
+      res.statusCode = code;
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      res.end(JSON.stringify(value));
+    };
+    try {
+      const body = await readJsonBody(req, signal);
+      const patch: any = {};
+      const backends = ['comfy', 'sdwebui', 'openai', 'gemini', 'dashscope'];
+      if (typeof body?.defaultBackend === 'string' && backends.includes(body.defaultBackend)) patch.defaultBackend = body.defaultBackend;
+      if (typeof body?.outputDir === 'string') patch.outputDir = body.outputDir.slice(0, 400);
+      if (typeof body?.python === 'string') patch.python = body.python.slice(0, 400);
+      if (body?.backends?.comfy && typeof body.backends.comfy === 'object') {
+        patch.backends = { comfy: {} };
+        for (const key of ['workflow', 'model', 'size']) {
+          if (typeof body.backends.comfy[key] === 'string') patch.backends.comfy[key] = body.backends.comfy[key].slice(0, 300);
+        }
+      }
+      await studio().save(patch);
+      json(200, { ok: true });
+    } catch (error: any) {
+      json(400, { ok: false, error: String(error?.message ?? error).slice(0, 300) });
+    }
   });
 
   /** 让别的插件（比如自主性、QQ）也能直接要一张图，不必经过工具调用。 */

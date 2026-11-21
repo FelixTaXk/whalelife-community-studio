@@ -16,6 +16,7 @@ import type { Context } from 'whalelife';
 import { inferMapping } from '../../lib/comfy-workflow.ts';
 import { ComfyClient } from '../../lib/comfy.ts';
 import { loadWorkflow, runBackend } from '../../lib/providers.ts';
+import { renderVideoSettings } from '../../lib/sub-settings.ts';
 import { describeTask, TaskBox } from '../../lib/tasks.ts';
 import type { GenResult } from '../../lib/types.ts';
 
@@ -24,6 +25,7 @@ const DATA = join(HERE, 'data');
 
 type StudioService = {
   config(): Promise<any>;
+  save(patch: any): Promise<any>;
   paths(): Promise<{
     dataDir: string;
     outDir: string;
@@ -37,6 +39,7 @@ type StudioService = {
   workflows(options?: { kind?: 'image' | 'video' }): Promise<
     Array<{ name: string; format: 'api' | 'canvas'; kind?: 'image' | 'video'; slots?: string; notes?: string[]; error?: string }>
   >;
+  health(name?: string): Promise<any>;
 };
 
 export async function apply(ctx: Context) {
@@ -220,6 +223,68 @@ export async function apply(ctx: Context) {
       }
       return { status: 'ok', task: { ...record, summary: describeTask(record) } };
     },
+  });
+
+  const readJsonBody = async (req: any, signal?: AbortSignal) => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    for await (const chunk of req) {
+      size += Buffer.byteLength(chunk);
+      if (size > 64 * 1024) throw Error('提交的内容太大');
+      chunks.push(Buffer.from(chunk));
+    }
+    signal?.throwIfAborted();
+    const raw = Buffer.concat(chunks).toString('utf8').trim();
+    return raw ? JSON.parse(raw) : {};
+  };
+
+  ctx.web.page('/plugins/studio/video/settings', async (_req: any, res: any) => {
+    const studioSvc = studio();
+    const cfg = await studioSvc.config();
+    const paths = await studioSvc.paths();
+    let workflows: any[] = [];
+    let health: any = null;
+    try {
+      workflows = await studioSvc.workflows({ kind: 'video' });
+    } catch {
+      workflows = [];
+    }
+    try {
+      health = await studioSvc.health(cfg.video?.backend);
+    } catch (error: any) {
+      health = { online: false, reason: String(error?.message ?? error).slice(0, 200) };
+    }
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-store');
+    res.end(renderVideoSettings({ cfg, paths, workflows, health }));
+  }, { title: '拍视频设置', settings: true, navigation: true });
+
+  ctx.web.api('/plugins/studio/video/settings/save', async (req: any, res: any, { signal }: any) => {
+    const json = (code: number, value: any) => {
+      res.statusCode = code;
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      res.end(JSON.stringify(value));
+    };
+    try {
+      const body = await readJsonBody(req, signal);
+      const source = body?.video && typeof body.video === 'object' ? body.video : {};
+      const int = (value: any, min: number, max: number) => {
+        const n = Number(value);
+        return Number.isFinite(n) ? Math.max(min, Math.min(max, Math.floor(n))) : undefined;
+      };
+      const patch: any = { video: {} };
+      const backends = ['comfy', 'sdwebui', 'openai', 'gemini', 'dashscope'];
+      if (typeof source.backend === 'string' && backends.includes(source.backend)) patch.video.backend = source.backend;
+      if (typeof source.workflow === 'string') patch.video.workflow = source.workflow.slice(0, 300);
+      for (const [key, min, max] of [['width', 64, 4096], ['height', 64, 4096], ['length', 1, 1000], ['timeoutMs', 60_000, 3_600_000]] as const) {
+        const value = int(source[key], min, max);
+        if (value !== undefined) patch.video[key] = value;
+      }
+      await studio().save(patch);
+      json(200, { ok: true });
+    } catch (error: any) {
+      json(400, { ok: false, error: String(error?.message ?? error).slice(0, 300) });
+    }
   });
 
   ctx.logger.info(`拍视频已加载：任务目录 ${join(DATA, 'tasks')}`);

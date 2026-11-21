@@ -14,6 +14,11 @@
 - 画画：`draw` / `draw_batch` / `draw_task` / `image_view` / `image_mask` / `image_workflows`
 - 拍视频：`make_video` / `video_task` / `video_workflows`
 
+子插件设置页：
+
+- 画画 `/plugins/studio/image/settings`：默认后端、ComfyUI 默认工作流、默认尺寸/模型、输出目录、Python，以及本机模型与工作流统计。
+- 拍视频 `/plugins/studio/video/settings`：视频后端、默认视频工作流、宽高与帧数、超时，并列出可用视频工作流。
+
 子插件：
 
 - `sub/image`：上面那组画画工具
