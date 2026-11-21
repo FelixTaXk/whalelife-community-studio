@@ -63,19 +63,23 @@ export function selfiePrompt(options: ShootOptions = {}): { prompt: string; nega
   const place = scene ? `, ${scene}` : ', in her room by the window';
   const look = lookWithOutfit(outfit);
   const face = mood ? `, ${mood}` : '';
+  const night = /late at night|night|dark|evening|dusk/.test(scene);
+  const camera = night
+    ? CAMERA_SELFIE.replace('natural window light', 'dim warm lamp light, dark room, soft phone-screen glow')
+    : CAMERA_SELFIE;
   if (style === 'paint') {
     return {
-      prompt: `loose watercolor painting of ${look}, painted from life, ${CAMERA_SELFIE.replace('realistic photography', 'watercolor on rough paper')}${place}${face}`,
+      prompt: `loose watercolor painting of ${look}, painted from life, ${camera.replace('realistic photography', 'watercolor on rough paper')}${place}${face}`,
       negative: NEGATIVE_PAINT,
     };
   }
   if (style === 'film') {
     return {
-      prompt: `${look}, ${CAMERA_SELFIE}${place}${face}, ${CAMERA_FILM}`,
+      prompt: `${look}, ${camera}${place}${face}, ${CAMERA_FILM}`,
       negative: NEGATIVE_SELFIE,
     };
   }
-  return { prompt: `${look}, ${CAMERA_SELFIE}${place}${face}`, negative: NEGATIVE_SELFIE };
+  return { prompt: `${look}, ${camera}${place}${face}`, negative: NEGATIVE_SELFIE };
 }
 
 /** 随手拍：没人入镜的角落、光、东西。她拍这类比拍人熟。 */
