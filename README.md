@@ -53,7 +53,7 @@
 - `prop`：每张都带的标志性道具，例如 `an old film camera around the neck`；留空就不加。
 - `selfieFallbackScene` / `snapshotFallbackScene`：日程读不到时的默认场景。
 - `painterStyle`：画画和自画像时追加的画者说明；留空用通用业余画者文案。
-- `paintFallbackSubject`：`paint` 没给主体时画什么。
+- `paintFallbackSubject`：`paint` 没给主体时的固定主体；留空则从 `randomSubjects` 随机挑。
 - `randomSubjects`：`paint` 没给主体时随机挑的主体池。
 - `paintStyles`：随机画风池，取值 `watercolor` / `sketch` / `illustration`。
 

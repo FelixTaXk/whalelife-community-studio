@@ -401,13 +401,15 @@ export async function apply(ctx: Context) {
       const input = args ?? {};
       const cfg = await studio().config();
       const explicitSubject = String(input.subject ?? '').trim();
+      const fixedSubject = String(cfg?.persona?.paintFallbackSubject ?? '').trim();
+      const hasSubject = Boolean(explicitSubject || fixedSubject);
       const style = input.style
         ? normalizePaintingStyle(String(input.style))
-        : explicitSubject
+        : hasSubject
           ? 'watercolor'
           : normalizePaintingStyle(randomPaintingStyle(cfg?.persona?.paintStyles));
       const notes: string[] = [];
-      let subject = explicitSubject;
+      let subject = explicitSubject || fixedSubject;
       if (!subject) {
         subject = randomSubject(cfg?.persona?.randomSubjects);
         notes.push(`随机主体：${subject}`, `随机画风：${style}`);
@@ -433,7 +435,7 @@ export async function apply(ctx: Context) {
         height: size.height,
       }, 180, 'none', 'paint');
       if (result.status === 'ok') {
-        result.notes = [explicitSubject ? `画的：${explicitSubject}` : '画的：随机一张', ...notes, ...(result.notes ?? [])];
+        result.notes = [explicitSubject || fixedSubject ? `画的：${subject}` : '画的：随机一张', ...notes, ...(result.notes ?? [])];
       }
       return result;
     },

@@ -195,7 +195,7 @@ pre{background:var(--soft);border:1px solid var(--line);border-radius:8px;paddin
     ${areaField('p', 'selfieFallbackScene', '自拍默认场景', cfg.persona.selfieFallbackScene, '日程读不到时用这个')}
     ${areaField('p', 'snapshotFallbackScene', '随手拍默认场景', cfg.persona.snapshotFallbackScene, '日程读不到时用这个')}
     ${areaField('p', 'painterStyle', '画者说明', cfg.persona.painterStyle, '自画像/画画时追加；留空用通用业余画者')}
-    ${areaField('p', 'paintFallbackSubject', '画画默认主体', cfg.persona.paintFallbackSubject, '没给主体时画这个')}
+    ${areaField('p', 'paintFallbackSubject', '画画固定主体', cfg.persona.paintFallbackSubject, '留空随机挑；填了就一直画这个')}
     ${areaField('p', 'randomSubjects', '随机主体池', cfg.persona.randomSubjects.join('，'), '逗号分隔；画画没给主体时随机挑')}
     ${simpleField('p', 'paintStyles', '随机画风池', cfg.persona.paintStyles.join('，'), '逗号分隔：watercolor / sketch / illustration')}
   </div>

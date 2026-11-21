@@ -149,7 +149,7 @@ export const DEFAULTS: StudioConfig = {
     selfieFallbackScene: 'by the window',
     snapshotFallbackScene: 'a quiet corner by the window',
     painterStyle: '',
-    paintFallbackSubject: 'the street outside the window after rain',
+    paintFallbackSubject: '',
     randomSubjects: DEFAULT_RANDOM_SUBJECTS.slice(),
     paintStyles: ['watercolor', 'sketch', 'illustration'],
   },
@@ -223,7 +223,7 @@ export function normalize(raw: any): StudioConfig {
     selfieFallbackScene: text(persona.selfieFallbackScene, DEFAULTS.persona.selfieFallbackScene, 400) || DEFAULTS.persona.selfieFallbackScene,
     snapshotFallbackScene: text(persona.snapshotFallbackScene, DEFAULTS.persona.snapshotFallbackScene, 400) || DEFAULTS.persona.snapshotFallbackScene,
     painterStyle: text(persona.painterStyle, '', 400),
-    paintFallbackSubject: text(persona.paintFallbackSubject, DEFAULTS.persona.paintFallbackSubject, 400) || DEFAULTS.persona.paintFallbackSubject,
+    paintFallbackSubject: text(persona.paintFallbackSubject, '', 400),
     randomSubjects: list(persona.randomSubjects, DEFAULTS.persona.randomSubjects),
     paintStyles: list(persona.paintStyles, DEFAULTS.persona.paintStyles, 10, 40),
   };
