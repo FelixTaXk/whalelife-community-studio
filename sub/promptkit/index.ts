@@ -18,7 +18,14 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Context } from 'whalelife';
-import { isNsfwCategory, WORD_DEFAULT, WORD_KINDS, WORD_LANGS, type WordConfig, type WordEngine } from '../../lib/words.ts';
+import {
+  createWordEngine,
+  isNsfwCategory,
+  WORD_DEFAULT,
+  WORD_KINDS,
+  WORD_LANGS,
+  type WordConfig,
+} from '../../lib/words.ts';
 
 const PAGE = '/plugins/studio/promptkit/settings';
 const API_CONFIG = '/plugins/studio/promptkit/config';
@@ -28,9 +35,12 @@ const API_RESET = '/plugins/studio/promptkit/reset-library';
 const API_SAMPLE = '/plugins/studio/promptkit/sample';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
+const DATA_FILE = join(HERE, 'data', 'prompts.json');
 const SAMPLE_FILE = join(HERE, 'assets', 'prompts.sample.json');
 /** 旧版本把示例放在 data/ 下；官方包里 data 会被跳过，这里只做向后兼容 */
 const SAMPLE_LEGACY = join(HERE, 'data', 'prompts.sample.json');
+/** 打包时 assets 会随包分发；data 属于用户数据，不会被覆盖。两个都没有就用空词库。 */
+const SAMPLE_PATH = existsSync(SAMPLE_FILE) ? SAMPLE_FILE : existsSync(SAMPLE_LEGACY) ? SAMPLE_LEGACY : undefined;
 
 /** 打开 NSFW 开关时要展示的警告；页面横幅、确认框、服务端拒绝都用同一段话。 */
 const NSFW_WARNING =
@@ -480,7 +490,22 @@ function fallbackPageData(path: string): PageData {
 }
 
 export function apply(ctx: Context) {
-  const engine = () => ctx.get('promptkit') as unknown as WordEngine | undefined;
+  // 词库引擎归本插件所有：停用/卸载「提示词小抄」时，画画那边的 optional('promptkit') 会跟着解绑，
+  // 自动补词也就真正停了（以前引擎注册在父级，关掉子插件照样在补词）。
+  // 配置走 ctx.config（本插件自己的 data 目录），父级不再读这里的私有文件。
+  const engineInstance = createWordEngine({
+    file: DATA_FILE,
+    sample: SAMPLE_PATH,
+    readConfig: async () => {
+      try {
+        return await ctx.config.read('config.json');
+      } catch {
+        return null;
+      }
+    },
+  });
+  ctx.provide('promptkit', engineInstance);
+  const engine = () => engineInstance;
 
   /** 页面用：服务没注册或词库读崩都抛，由调用方降级渲染。 */
   const loadPage = async (): Promise<PageData> => {

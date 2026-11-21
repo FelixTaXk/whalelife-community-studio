@@ -54,13 +54,14 @@
 
 ## 结构
 
-- 词库引擎：`plugins/studio/lib/words.ts`，由父插件**始终** `ctx.provide('promptkit', …)` 暴露（缺词库也注册）；
+- 词库引擎：`plugins/studio/lib/words.ts`，由**本插件**在 `apply()` 里创建并 `ctx.provide('promptkit', …)`；
   引擎负责成人分类的门控（`allowNsfw`）与统计；
-- 本插件：注册工具、设置页和导入 API，配置写在自己的 `data/config.json`；
+- 本插件：注册工具、设置页和导入 API；配置用 `ctx.config`（自己的 `data/config.json`）；
 - 画画子插件：在 `optionalDepends` 里声明 `promptkit`，用 `ctx.optional('promptkit', …)` 拿到服务。
+  **停用/卸载本插件时这个绑定会一起失效，自动补词也随之停止**；父级不再读本插件的私有配置。
 
 词库查找顺序：`data/prompts.json`（用户自己的）→ `assets/prompts.sample.json`（随包示例）→ 空词库。
-父级平时只读；只有用户在设置页点「导入词库」时才会写 `data/prompts.json`。
+引擎平时只读；只有用户在设置页点「导入词库」时才会写 `data/prompts.json`。
 
 ## 数据与重建
 

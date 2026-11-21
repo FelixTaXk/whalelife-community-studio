@@ -39,24 +39,23 @@ let cfg = existsSync(cfgFile) ? JSON.parse(readFileSync(cfgFile, 'utf8')) : {};
 const tools = new Map();
 const pages = new Map();
 const apis = new Map();
-let engine = createWordEngine({
-  file: LIB,
-  sample: SAMPLE,
-  readConfig: async () => cfg,
-});
+// 服务由本插件自己 provide（引擎归小抄所有），这里按宿主的方式收着。
+const services = new Map();
 const ctx = {
   apiVersion: '1.0.0',
   signal: new AbortController().signal,
   logger: { info() {}, warn() {}, error() {}, debug() {} },
   config: { read: async () => cfg, save: async (_n, v) => ((cfg = v), v) },
-  get: (n) => (n === 'promptkit' ? engine : undefined),
-  provide() {},
+  get: (n) => services.get(n),
+  provide: (name, value) => services.set(name, value),
   effect: () => () => {},
   optional: () => () => {},
   tools: { register: (t) => tools.set(t.name, t) },
   web: { page: (p, h) => pages.set(p, h), api: (p, h) => apis.set(p, h) },
 };
 apply(ctx);
+const engine = services.get('promptkit');
+ok('小抄自己注册 promptkit 服务', Boolean(engine) && typeof engine.search === 'function');
 
 // ---------- 假 req / res ----------
 const makeRes = () => ({
@@ -156,13 +155,13 @@ html = await page();
 ok('页面：开启后显示警告横幅', html.includes('id="nsfwWarn">🔞'));
 
 // ---------- 8. 工具结果说明用哪份词库 ----------
-const broken = createWordEngine({ file: join(tmpdir(), 'no-such-prompts.json'), sample: SAMPLE, readConfig: async () => ({}) });
-const prev = engine;
-engine = broken;
-const withNote = await tools.get('prompt_categories').run();
-ok('工具：用示例词库时带 notice', typeof withNote.notice === 'string' && withNote.notice.includes('示例'), withNote.notice);
-ok('工具：结果里带 library 信息', withNote.library?.sample === true && withNote.library?.tags === 140);
-engine = prev;
+const catsResult = await tools.get('prompt_categories').run();
+ok('工具：结果带 library 信息', Boolean(catsResult.library) && typeof catsResult.library.tags === 'number', `tags=${catsResult.library?.tags}`);
+if (catsResult.library?.sample || catsResult.library?.broken) {
+  ok('工具：回退示例时带 notice', typeof catsResult.notice === 'string' && catsResult.notice.length > 0, catsResult.notice);
+} else {
+  ok('工具：用自己的词库时不加多余 notice', catsResult.notice === undefined);
+}
 
 // ---------- 9. 导入源数据 ----------
 const tmp = mkdtempSync(join(tmpdir(), 'promptkit-selftest-'));

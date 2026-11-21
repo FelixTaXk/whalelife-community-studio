@@ -25,9 +25,10 @@
 - `sub/video`：上面那组视频工具
 - `sub/promptkit`（提示词小抄）：`prompt_categories` / `prompt_search` / `prompt_pick` / `prompt_recipe`，加上设置页 `/plugins/studio/promptkit/settings`；含 NSFW 分类开关（默认关）
 
-`promptkit` 的词库引擎放在父级（`lib/words.ts`），由 `ctx.provide('promptkit', …)` 同时给两个子插件用：
-词库和补词配置归小抄自己（`sub/promptkit/data/`），画画在出图前调用 `enrich()`，
-默认给 `draw` / `selfie` / `snapshot` / `paint` 补 2 个质量词，补了什么会写进结果的 `notes`。
+词库引擎 `lib/words.ts` 由「提示词小抄」子插件自己注册服务（`ctx.provide('promptkit', …)`）：
+词库和补词配置都归小抄自己（`sub/promptkit/data/`），画画通过 `optionalDepends: [promptkit]` 接入，
+出图前调用 `enrich()`，默认给 `draw` / `selfie` / `snapshot` / `paint` 补 2 个质量词，补了什么会写进结果的 `notes`。
+**停用/卸载小抄子插件时这个绑定会一起解绑，自动补词也就真正停了**；父级不再读子插件的私有配置。
 成人分类（id 以 `nsfw` 开头）默认隐藏，要查词得先在设置页打开开关并确认警告；**自动补词永远不用成人分类**。
 
 ### 词库：随包示例 / 自备 / 导入
@@ -71,7 +72,7 @@
 | `workflows({kind})` / `models({refresh})` | 列工作流、列本地模型 |
 | `health(name?)` | 不传 name 查 `defaultBackend`：`online=true` 能连、`false` 连不上、`null` 配置了但没法便宜地探（如通义异步接口）；带 `reason` / `version` / `device` |
 | `generate(input, signal?)` | 直接出一张图：参数与 `draw` 一致（prompt / negative / width / height / model / workflow / image / mask / strength…），返回 `GenResult`（`ok` / `files` / `seed` / `notes`） |
-| `promptkit`（另一个服务） | `stats()` / `categories()` / `search()` / `pick()` / `recipe()` / `enrich({text, kind})`：查词、挑词、拼配方、出图前自动补词。成人分类是否可见由小抄的 `allowNsfw` 配置决定，`enrich` 始终不用成人分类 |
+| `promptkit`（小抄子插件提供的服务） | `stats()` / `categories()` / `search()` / `pick()` / `recipe()` / `enrich({text, kind})`：查词、挑词、拼配方、出图前自动补词。停用小抄后绑定失效，`enrich` 自然不再被调用；成人分类是否可见由小抄的 `allowNsfw` 配置决定，`enrich` 始终不用成人分类 |
 
 `generate` 和 `draw` 走同一条后端链路，但不入图库、不发消息、不建任务记录；调用方拿 `files[].path` 自己处理。
 

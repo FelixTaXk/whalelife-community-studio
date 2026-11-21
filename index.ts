@@ -21,7 +21,6 @@ import type { GenResult } from './lib/types.ts';
 import { renderSettings } from './lib/ui.ts';
 import { deploy, deployBusy, probe, readDeployState, recommend, startComfy } from './lib/setup.ts';
 import { renderSetup } from './lib/setup-ui.ts';
-import { createWordEngine } from './lib/words.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const BASE = '/plugins/studio/';
@@ -196,31 +195,9 @@ export function apply(ctx: Context) {
   };
   ctx.provide('studio', service);
 
-  // 提示词小抄：词库引擎常驻父级，画画子插件和「提示词小抄」设置页共用。
-  // 词库与补词配置归子插件（sub/promptkit/data），父级只读，不写用户数据。
-  // 词库是可选的：优先 data/prompts.json（用户导入），没有就读随包资源 assets/prompts.sample.json
-  // （assets 会进官方 .wlpkg.gz；data 属于用户数据，打包器会跳过，所以示例不能放 data）。
-  // 两个都没有也照样注册服务，引擎返回 0 条词，页面提示导入，不会 500。
-  const wordsDir = join(HERE, 'sub', 'promptkit', 'data');
-  const wordsFile = join(wordsDir, 'prompts.json');
-  const wordsAsset = join(HERE, 'sub', 'promptkit', 'assets', 'prompts.sample.json');
-  const wordsLegacy = join(wordsDir, 'prompts.sample.json');
-  const wordsSample = existsSync(wordsAsset) ? wordsAsset : existsSync(wordsLegacy) ? wordsLegacy : undefined;
-  const wordsConfig = join(wordsDir, 'config.json');
-  ctx.provide(
-    'promptkit',
-    createWordEngine({
-      file: wordsFile,
-      sample: wordsSample,
-      readConfig: async () => {
-        try {
-          return JSON.parse(readFileSync(wordsConfig, 'utf8'));
-        } catch {
-          return null;
-        }
-      },
-    }),
-  );
+  // 提示词小抄的词库引擎现在由 sub/promptkit 自己注册（ctx.provide('promptkit') 在小抄里）。
+  // 这样停用小抄子插件时，画画的 optional('promptkit') 会跟着解绑，自动补词真正停下；
+  // 补词配置也回到小抄自己的 ctx.config，父级不再读子插件的私有 data 文件。
 
   ctx.tools.register({
     name: 'studio_status',
