@@ -1,12 +1,15 @@
-// 从鱼仔的 PromptForge 词库生成迟宝可用的子集。
-// 用法：node scripts/build-data.mjs
-// 输入：D:/dafeiyu/fish-extra/lib/forge-data.json（只读，不改源文件）
-// 输出：data/prompts.json
+// 从鱼仔的 PromptForge 词库生成画室可用的 data/prompts.json。
+// 用法：
+//   node scripts/build-data.mjs          # 安全子集：去掉 NSFW 四类、人物基础 / 身材 / 面部 / 怪物，再按黑名单过滤
+//   node scripts/build-data.mjs --full   # 全量：保留全部 25 个分类与 2742 条词（含 NSFW 四类，由插件开关单独控制）
+// 输入：D:/dafeiyu/fish-extra/lib/forge-data.json（只读，不改源文件；可用环境变量 FORGE_SRC 覆盖）
+// 输出：data/prompts.json（引擎认的格式：categories + tags）
 //
-// 过滤原则：
-// 1) 丢掉 NSFW 四类、人物基础 / 身材 / 面部（迟宝外貌由人设和定妆照固定，不靠词库换）
-// 2) 逐条黑名单过滤，中文按子串、英文按单词边界，避免把色情或未成年相关词带进来
-// 3) 不导出 presets / chars / models，只保留分类和词条
+// 说明：
+// 1) 全量模式不做任何删减，NSFW 四类照样写进文件；是否能用由插件的「NSFW 分类」开关决定，
+//    默认关闭时这四个分类不会出现在查词工具和自动补词里。
+// 2) 安全子集模式的过滤规则：整类剔除见 DROP_CATS，词条级黑名单见 ZH_BLOCK / EN_BLOCK。
+// 3) 两种模式都不导出 presets / chars / models —— 引擎只读分类和词条，导出等于白占体积。
 
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -15,6 +18,8 @@ import { fileURLToPath } from 'node:url';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SRC = process.env.FORGE_SRC || 'D:/dafeiyu/fish-extra/lib/forge-data.json';
 const OUT = join(HERE, '..', 'data', 'prompts.json');
+
+const FULL = process.argv.includes('--full') || process.env.PROMPTKIT_FULL === '1';
 
 const DROP_CATS = new Set([
   'base', 'body', 'face',
@@ -60,29 +65,44 @@ function blocked(tag) {
 }
 
 const src = JSON.parse(readFileSync(SRC, 'utf8'));
-const tags = (src.tags ?? []).filter(
+// 源数据用 cats，插件引擎认 categories；这里统一成引擎的字段名。
+const srcCats = src.categories ?? src.cats ?? [];
+const srcTags = src.tags ?? [];
+
+const tags = FULL ? srcTags.filter((t) => String(t.cat ?? '')) : srcTags.filter(
   (t) => !DROP_CATS.has(String(t.cat ?? '')) && !blocked(t),
 );
 
 const counts = new Map();
 for (const t of tags) counts.set(t.cat, (counts.get(t.cat) ?? 0) + 1);
 
-const categories = (src.cats ?? [])
-  .filter((c) => !DROP_CATS.has(String(c.id ?? '')) && counts.get(c.id))
-  .map((c) => ({ id: c.id, name: c.name, icon: c.icon ?? '', count: counts.get(c.id) }));
+const categories = srcCats
+  .filter((c) => (FULL || !DROP_CATS.has(String(c.id ?? ''))) && counts.get(c.id))
+  .map((c) => ({
+    id: c.id,
+    name: c.name,
+    icon: c.icon ?? '',
+    count: counts.get(c.id),
+  }));
+
+const nsfwTags = tags.filter((t) => /^nsfw/i.test(String(t.cat ?? ''))).length;
 
 const out = {
   version: 1,
-  source: 'PromptForge (D:/dafeiyu/fish-extra/lib/forge-data.json)',
-  note: '仅保留非成人分类；已按黑名单过滤色情与未成年相关词条',
+  mode: FULL ? 'full' : 'safe',
+  source: src.source || 'PromptForge',
+  sourceGeneratedAt: src.generatedAt || '',
+  note: FULL
+    ? 'full：保留全部 25 个分类与全部词条（含 NSFW 四类）；NSFW 是否可用由插件「NSFW 分类」开关决定，默认关闭。'
+    : 'safe：仅保留非成人分类；已按黑名单过滤色情与未成年相关词条',
   builtAt: new Date().toISOString(),
   categories,
   tags: tags.map((t) => ({ en: t.en ?? '', zh: t.zh ?? '', cat: t.cat })),
 };
 
 mkdirSync(dirname(OUT), { recursive: true });
-writeFileSync(OUT, JSON.stringify(out, null, 0), 'utf8');
+writeFileSync(OUT, JSON.stringify(out), 'utf8');
 
 console.log(
-  `categories=${categories.length} tags=${tags.length} bytes=${Buffer.byteLength(JSON.stringify(out))}`,
+  `mode=${out.mode} categories=${categories.length} tags=${tags.length} nsfwTags=${nsfwTags} bytes=${Buffer.byteLength(JSON.stringify(out))}`,
 );

@@ -6,6 +6,11 @@
  *
  * 词库是可选的：随包带一份示例词库（prompts.sample.json，CC0-1.0，可自由再分发），
  * 用户也可以导入自己的 data/prompts.json；两份都没有时页面给导入说明，不报 500。
+ *
+ * NSFW：词库可以带成人分类（id 以 nsfw 开头）。默认关闭，关闭时四个查词工具里看不到这些分类；
+ * 打开需要用户在设置页确认一次（前端确认 + 服务端 acknowledgeNsfw 双保险），打开后页面常驻警告。
+ * 自动补词始终不使用成人分类，不受这个开关影响。
+ *
  * SPDX-License-Identifier: AGPL-3.0-only
  * Additional terms under AGPLv3 Section 7: see LICENSE-ADDITIONAL.
  */
@@ -13,7 +18,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Context } from 'whalelife';
-import { WORD_DEFAULT, WORD_KINDS, WORD_LANGS, type WordConfig, type WordEngine } from '../../lib/words.ts';
+import { isNsfwCategory, WORD_DEFAULT, WORD_KINDS, WORD_LANGS, type WordConfig, type WordEngine } from '../../lib/words.ts';
 
 const PAGE = '/plugins/studio/promptkit/settings';
 const API_CONFIG = '/plugins/studio/promptkit/config';
@@ -27,6 +32,11 @@ const SAMPLE_FILE = join(HERE, 'assets', 'prompts.sample.json');
 /** 旧版本把示例放在 data/ 下；官方包里 data 会被跳过，这里只做向后兼容 */
 const SAMPLE_LEGACY = join(HERE, 'data', 'prompts.sample.json');
 
+/** 打开 NSFW 开关时要展示的警告；页面横幅、确认框、服务端拒绝都用同一段话。 */
+const NSFW_WARNING =
+  '已打开 NSFW 分类：查词工具会返回成人内容词条。请确认你已满 18 岁，并自行承担生成与发布的责任；' +
+  'B 站 / 抖音 / QQ 群等平台会把这类内容判为违规，不要用在公开内容里。';
+
 type LibraryInfo = {
   path: string;
   exists: boolean;
@@ -35,6 +45,8 @@ type LibraryInfo = {
   builtAt: string;
   categories: number;
   tags: number;
+  nsfwCategories: number;
+  nsfwTags: number;
   broken: boolean;
 };
 
@@ -45,13 +57,16 @@ type PageData = {
     enabledCategories: number;
     tags: number;
     enabledTags: number;
+    nsfwCategories: number;
+    nsfwTags: number;
+    allowNsfw: boolean;
     builtAt: string;
     autoEnrich: boolean;
     enrichKinds: string[];
     enrichLayers: string[];
     enrichCount: number;
   };
-  categories: Array<{ id: string; name: string; count: number }>;
+  categories: Array<{ id: string; name: string; count: number; nsfw: boolean }>;
   builtAt: string;
   library: LibraryInfo;
 };
@@ -115,24 +130,34 @@ function renderPage(data: PageData, notice = '') {
       ? `<div class="banner warn">你自己的 <code>${esc(join(HERE, 'data', 'prompts.json'))}</code> 读不出来（不是合法 JSON 或没有可用词条），已经先回退到示例词库；重新导入一份就能覆盖。</div>`
       : '';
   const noticeHtml = notice ? `<div class="banner warn">${esc(notice)}</div>` : '';
+  const nsfwBanner = cfg.allowNsfw ? `<div class="banner danger">🔞 ${esc(NSFW_WARNING)}</div>` : '';
   const off = new Set(cfg.disabledCategories);
   const layerSet = new Set(cfg.recipeLayers);
   const enrichSet = new Set(cfg.enrichLayers);
+  const nsfwCats = lib?.nsfwCategories ?? s.nsfwCategories ?? 0;
+  const nsfwCount = lib?.nsfwTags ?? s.nsfwTags ?? 0;
+  /** 成人分类统一标注；总闸关着时再补一句说明 */
+  const nsfwHint = (locked: boolean, nsfw: boolean) => (!nsfw ? '' : locked ? ' · 🔞 总闸关着' : ' · 🔞 NSFW');
   const catRows = data.categories
-    .map(
-      (c) =>
-        `<label class="check"><input type="checkbox" name="cat" value="${esc(c.id)}"${
-          off.has(c.id) ? '' : ' checked'
-        }><span>${esc(c.name)}<em>${c.count} 条</em></span></label>`,
-    )
+    .map((c) => {
+      const locked = c.nsfw && !cfg.allowNsfw;
+      return `<label class="check${locked ? ' locked' : ''}"><input type="checkbox" name="cat" value="${esc(c.id)}"${
+        off.has(c.id) ? '' : ' checked'
+      }${locked ? ' disabled' : ''} data-nsfw="${c.nsfw ? '1' : '0'}"><span>${esc(c.name)}<em>${c.count} 条${nsfwHint(
+        locked,
+        c.nsfw,
+      )}</em></span></label>`;
+    })
     .join('');
   const layerRows = data.categories
-    .map(
-      (c) =>
-        `<label class="check"><input type="checkbox" name="layer" value="${esc(c.id)}"${
-          layerSet.has(c.id) ? ' checked' : ''
-        }><span>${esc(c.name)}<em>${esc(c.id)}</em></span></label>`,
-    )
+    .map((c) => {
+      const locked = c.nsfw && !cfg.allowNsfw;
+      return `<label class="check${locked ? ' locked' : ''}"><input type="checkbox" name="layer" value="${esc(c.id)}"${
+        layerSet.has(c.id) ? ' checked' : ''
+      }${locked ? ' disabled' : ''} data-nsfw="${c.nsfw ? '1' : '0'}"><span>${esc(
+        c.name,
+      )}<em>${esc(c.id)}${nsfwHint(locked, c.nsfw)}</em></span></label>`;
+    })
     .join('');
   const kindRows = WORD_KINDS.map(
     (kind) =>
@@ -141,14 +166,15 @@ function renderPage(data: PageData, notice = '') {
       }><span>${KIND_LABEL[kind]}<em>${kind}</em></span></label>`,
   ).join('');
   const enrichRows = data.categories
-    .map(
-      (c) =>
-        `<label class="check${c.id === 'negative' ? ' disabled' : ''}"><input type="checkbox" name="elayer" value="${esc(
-          c.id,
-        )}"${enrichSet.has(c.id) ? ' checked' : ''}${c.id === 'negative' ? ' disabled' : ''}><span>${esc(
-          c.name,
-        )}<em>${esc(c.id)}</em></span></label>`,
-    )
+    .map((c) => {
+      const blocked = c.id === 'negative' || c.nsfw;
+      const why = c.id === 'negative' ? ' · 负面词不参与' : c.nsfw ? ' · 自动补词不用成人分类' : '';
+      return `<label class="check${blocked ? ' disabled' : ''}"><input type="checkbox" name="elayer" value="${esc(
+        c.id,
+      )}"${enrichSet.has(c.id) ? ' checked' : ''}${blocked ? ' disabled' : ''}><span>${esc(
+        c.name,
+      )}<em>${esc(c.id)}${why}</em></span></label>`;
+    })
     .join('');
   return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>提示词小抄 · WhaleLife</title>
@@ -191,10 +217,15 @@ th{color:var(--muted);font-weight:500;width:130px}
 .banner.ok{border-color:#b6dcd6;background:#eef8f6}
 .banner.info{border-color:#cfdcea;background:#f1f6fb}
 .banner.warn{border-color:#e8cfa2;background:#fdf7ea;color:#7a5a1e}
+.banner.danger{border-color:#e2b4b4;background:#fdf0f0;color:#8a2b2b;font-weight:500}
+label.check.locked{opacity:.5;cursor:not-allowed;border-style:dashed}
+.nsfw-row{display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px dashed var(--line);border-radius:10px;margin-top:10px}
 @media(max-width:640px){.grid,.checks{grid-template-columns:1fr}}
 </style></head><body><main>
-<header><div><h1>提示词小抄</h1><p class="sub">${s.categories} 个分类 · ${s.tags} 条词 · 当前启用 ${s.enabledCategories} 个分类 / ${s.enabledTags} 条</p></div></header>
-${banner}${brokenHtml}${noticeHtml}
+<header><div><h1>提示词小抄</h1><p class="sub">${s.categories} 个分类 · ${s.tags} 条词 · 当前启用 ${s.enabledCategories} 个分类 / ${s.enabledTags} 条${
+    nsfwCount ? ` · NSFW ${nsfwCount} 条（${cfg.allowNsfw ? '已开启' : '已隐藏'}）` : ''
+  }</p></div></header>
+${banner}${brokenHtml}${noticeHtml}${nsfwBanner}
 
 <section class="card">
   <h2>词库</h2>
@@ -215,6 +246,18 @@ ${banner}${brokenHtml}${noticeHtml}
   </div>
   <p class="hint" style="margin-top:12px">格式：<code>{"categories":[{"id":"lighting","name":"光影"}],"tags":[{"cat":"lighting","zh":"逆光","en":"backlight"}]}</code>。词库是从外部数据生成的，可以用 <code>node sub/promptkit/scripts/build-data.mjs</code> 按自己的源数据重建；随包示例词库不含成人内容。</p>
   <div id="libMsg"></div>
+</section>
+
+<section class="card">
+  <h2>NSFW 分类</h2>
+  <p class="hint">词库里带了 ${nsfwCats} 个成人分类 / ${nsfwCount} 条词（id 以 <code>nsfw</code> 开头）。开关没开时，它们不会出现在 <code>prompt_categories / prompt_search / prompt_pick / prompt_recipe</code> 里；<b>自动补词永远不用成人分类</b>，开关开不开都一样。词条本身留在文件里，随时能开能关。${
+    nsfwCount ? '' : '当前词库里没有成人分类（随包示例就是安全词库），导入带 NSFW 分类的词库后这里才会出现可选项。'
+  }</p>
+  <label class="toggle"><input type="checkbox" id="allowNsfw"${
+    cfg.allowNsfw ? ' checked' : ''
+  }><span>允许查词工具使用 NSFW 分类</span></label>
+  <p class="hint">勾选后还要点页面最下面的「保存设置」才生效；关掉同样点保存。</p>
+  <div class="banner danger" id="nsfwWarn"${cfg.allowNsfw ? '' : ' hidden'}>🔞 ${esc(NSFW_WARNING)}</div>
 </section>
 
 <section class="card">
@@ -247,7 +290,7 @@ ${banner}${brokenHtml}${noticeHtml}
   <p class="hint">默认四个动作都补，但只补「质量与风格」里的质量词（杰作/最佳质量/高分辨率等）；自拍/随手拍/画一幅的构图和镜头不会被改。想要更多细节可以把光影、场景等层勾上，也可以单独关掉某个动作。</p>
   <div class="checks">${kindRows}</div>
   <h3>从哪些层补</h3>
-  <p class="hint">负面词不参与自动补词；“负面”那一类已禁用选择。</p>
+  <p class="hint">负面词和成人分类都不参与自动补词，这两类已禁用选择。</p>
   <div class="checks">${enrichRows}</div>
 </section>
 
@@ -269,7 +312,8 @@ ${banner}${brokenHtml}${noticeHtml}
     <tr><th>词库文件</th><td><code>${esc(libPath)}</code>${libState === 'sample' ? '（随包示例）' : ''}</td></tr>
     <tr><th>构建时间</th><td>${esc(s.builtAt || '未知')}</td></tr>
     <tr><th>词条</th><td>${s.tags} 条（启用 ${s.enabledTags} 条）</td></tr>
-    <tr><th>来源</th><td>随包示例词库为自撰通用词（CC0-1.0）；自己的词库可以用 <code>node sub/promptkit/scripts/build-data.mjs</code> 重建</td></tr>
+    <tr><th>NSFW</th><td>${nsfwCount} 条 / ${nsfwCats} 个分类 · 开关${cfg.allowNsfw ? '已开启' : '关闭中'} · 自动补词不用</td></tr>
+    <tr><th>来源</th><td>随包示例词库为自撰通用词（CC0-1.0）；自己的词库可以用 <code>node sub/promptkit/scripts/build-data.mjs --full</code> 重建（全量，含 NSFW），不带参数是安全子集</td></tr>
     <tr><th>自动补词</th><td>${s.autoEnrich ? '开' : '关'} · ${s.enrichKinds.join('、') || '无动作'} · ${s.enrichLayers.join('、') || '无层'} · 最多 ${s.enrichCount} 个</td></tr>
   </table>
   <div class="row">
@@ -287,6 +331,28 @@ const cats = () => Array.from(document.querySelectorAll('input[name=cat]'));
 const layers = () => Array.from(document.querySelectorAll('input[name=layer]'));
 const ekinds = () => Array.from(document.querySelectorAll('input[name=ekind]'));
 const elayers = () => Array.from(document.querySelectorAll('input[name=elayer]'));
+const nsfwBox = $('#allowNsfw');
+const nsfwWarn = $('#nsfwWarn');
+const NSFW_TEXT = ${JSON.stringify(NSFW_WARNING)};
+const NSFW_COUNT = ${nsfwCount};
+// 总闸关着时，成人分类的勾选框一起上锁；保存时跳过它们，保留原来的状态。
+function syncNsfw() {
+  const on = Boolean(nsfwBox && nsfwBox.checked);
+  if (nsfwWarn) nsfwWarn.hidden = !on;
+  document.querySelectorAll('input[data-nsfw="1"]').forEach((x) => {
+    x.disabled = !on;
+    const label = x.closest('label');
+    if (label) label.classList.toggle('locked', !on);
+  });
+}
+if (nsfwBox) {
+  nsfwBox.onchange = () => {
+    const ok = !nsfwBox.checked || window.confirm('开启后，查词工具会返回成人内容词条（共 ' + NSFW_COUNT + ' 条）。\\n\\n' + NSFW_TEXT + '\\n\\n确定要打开吗？');
+    if (!ok) nsfwBox.checked = false;
+    syncNsfw();
+    msg(nsfwBox.checked ? '已勾选 NSFW（还没保存）：点下面的「保存设置」后生效' : '已取消 NSFW（还没保存）');
+  };
+}
 async function post(url, body) {
   const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
   const data = await res.json().catch(() => ({}));
@@ -295,18 +361,21 @@ async function post(url, body) {
 }
 $('#save').onclick = async () => {
   try {
+    const nsfw = Boolean(nsfwBox && nsfwBox.checked);
     const body = {
       lang: $('#lang').value,
       pickCount: Number($('#pickCount').value),
-      disabledCategories: cats().filter((x) => !x.checked).map((x) => x.value),
+      disabledCategories: cats().filter((x) => !x.disabled && !x.checked).map((x) => x.value),
       recipeLayers: layers().filter((x) => x.checked).map((x) => x.value),
       autoEnrich: $('#autoEnrich').checked,
       enrichKinds: ekinds().filter((x) => x.checked).map((x) => x.value),
       enrichLayers: elayers().filter((x) => x.checked && !x.disabled).map((x) => x.value),
       enrichCount: Number($('#enrichCount').value),
+      allowNsfw: nsfw,
+      acknowledgeNsfw: nsfw,
     };
     const data = await post('${API_CONFIG}', body);
-    msg('已保存：启用 ' + data.stats.enabledCategories + ' 个分类 / ' + data.stats.enabledTags + ' 条词；自动补词 ' + (data.stats.autoEnrich ? '开' : '关'));
+    msg('已保存：启用 ' + data.stats.enabledCategories + ' 个分类 / ' + data.stats.enabledTags + ' 条词；自动补词 ' + (data.stats.autoEnrich ? '开' : '关') + '；NSFW ' + (data.stats.allowNsfw ? '开' : '关'));
   } catch (e) { msg('保存失败：' + e.message, true); }
 };
 $('#reload').onclick = async () => {
@@ -361,10 +430,12 @@ $('#reset').onclick = () => {
   $('#pickCount').value = '${WORD_DEFAULT.pickCount}';
   $('#autoEnrich').checked = ${WORD_DEFAULT.autoEnrich ? 'true' : 'false'};
   $('#enrichCount').value = '${WORD_DEFAULT.enrichCount}';
+  if (nsfwBox) nsfwBox.checked = ${WORD_DEFAULT.allowNsfw ? 'true' : 'false'};
   cats().forEach((x) => { x.checked = !${JSON.stringify(WORD_DEFAULT.disabledCategories)}.includes(x.value); });
   layers().forEach((x) => { x.checked = ${JSON.stringify(WORD_DEFAULT.recipeLayers)}.includes(x.value); });
   ekinds().forEach((x) => { x.checked = ${JSON.stringify(WORD_DEFAULT.enrichKinds)}.includes(x.value); });
   elayers().forEach((x) => { if (x.disabled) return; x.checked = ${JSON.stringify(WORD_DEFAULT.enrichLayers)}.includes(x.value); });
+  syncNsfw();
   msg('已恢复成默认（还没保存）');
 };
 </script>
@@ -380,6 +451,9 @@ function fallbackPageData(path: string): PageData {
       enabledCategories: 0,
       tags: 0,
       enabledTags: 0,
+      nsfwCategories: 0,
+      nsfwTags: 0,
+      allowNsfw: cfg.allowNsfw,
       builtAt: '',
       autoEnrich: cfg.autoEnrich,
       enrichKinds: cfg.enrichKinds.slice(),
@@ -388,7 +462,18 @@ function fallbackPageData(path: string): PageData {
     },
     categories: [],
     builtAt: '',
-    library: { path, exists: false, sample: false, bytes: 0, builtAt: '', categories: 0, tags: 0, broken: false },
+    library: {
+      path,
+      exists: false,
+      sample: false,
+      bytes: 0,
+      builtAt: '',
+      categories: 0,
+      tags: 0,
+      nsfwCategories: 0,
+      nsfwTags: 0,
+      broken: false,
+    },
   };
 }
 
@@ -418,7 +503,9 @@ export function apply(ctx: Context) {
 
   ctx.tools.register({
     name: 'prompt_categories',
-    description: '列出提示词小抄里当前启用的分类和词条数量。想按分类挑词先看这个。',
+    description:
+      '列出提示词小抄里当前启用的分类和词条数量。想按分类挑词先看这个。' +
+      '成人（NSFW）分类默认隐藏，要在设置页打开 NSFW 开关才会出现。',
     danger: 'safe',
     schema: { type: 'object', properties: {}, additionalProperties: false },
     async run() {
@@ -432,7 +519,8 @@ export function apply(ctx: Context) {
   ctx.tools.register({
     name: 'prompt_search',
     description:
-      '在提示词小抄里按关键词找词（中英都行）。找到的 en 值可以直接拼进 selfie 的 scene/mood 或 draw 的 prompt。',
+      '在提示词小抄里按关键词找词（中英都行）。找到的 en 值可以直接拼进 selfie 的 scene/mood 或 draw 的 prompt。' +
+      '成人（NSFW）分类默认搜不到，需先在设置页打开开关。',
     danger: 'safe',
     schema: {
       type: 'object',
@@ -456,7 +544,8 @@ export function apply(ctx: Context) {
     name: 'prompt_pick',
     description:
       '按分类随机挑几个词，用来给自拍/随手拍/画图加姿势、表情、构图、光影、场景、道具。' +
-      '挑出来的 en 直接填进 selfie 的 scene/mood/outfit 或 draw 的 prompt；只补画面细节，不改她本人的长相和年龄设定。',
+      '挑出来的 en 直接填进 selfie 的 scene/mood/outfit 或 draw 的 prompt；只补画面细节，不改她本人的长相和年龄设定。' +
+      '成人（NSFW）分类默认不参与随机，需先在设置页打开开关。',
     danger: 'safe',
     schema: {
       type: 'object',
@@ -596,12 +685,22 @@ export function apply(ctx: Context) {
       }
       if (patch?.enrichLayers !== undefined) {
         if (!Array.isArray(patch.enrichLayers)) throw Error('enrichLayers 要给数组');
-        next.enrichLayers = patch.enrichLayers.map(String).filter((id: string) => known.has(id) && id !== 'negative');
+        next.enrichLayers = patch.enrichLayers
+          .map(String)
+          .filter((id: string) => known.has(id) && id !== 'negative' && !isNsfwCategory(id));
       }
       if (patch?.enrichCount !== undefined) {
         const n = Number(patch.enrichCount);
         if (!Number.isFinite(n) || n < 1 || n > 5) throw Error('自动补词数量要在 1–5 之间');
         next.enrichCount = Math.round(n);
+      }
+      if (patch?.allowNsfw !== undefined) {
+        if (typeof patch.allowNsfw !== 'boolean') throw Error('allowNsfw 只能是 true / false');
+        // 打开是一次需要确认的动作：页面会先弹确认框，这里再校验一次，直接调接口绕不过去。
+        if (patch.allowNsfw && current.config.allowNsfw !== true && patch.acknowledgeNsfw !== true) {
+          return json(res, 400, { ok: false, error: NSFW_WARNING, requireAck: true });
+        }
+        next.allowNsfw = patch.allowNsfw;
       }
       await ctx.config.save('config.json', next);
       await eng.reload();
@@ -626,6 +725,6 @@ export function apply(ctx: Context) {
 
   ctx.logger.info('提示词小抄已加载', {
     settings: PAGE,
-    note: '词库可选：自己的 data/prompts.json 优先，其次随包示例词库；画画子插件在出图前调用补词',
+    note: '词库可选：自己的 data/prompts.json 优先，其次随包示例词库；NSFW 分类默认隐藏，设置页可打开；画画子插件在出图前调用补词',
   });
 }

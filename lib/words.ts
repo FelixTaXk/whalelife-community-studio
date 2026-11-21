@@ -5,6 +5,10 @@
  * 「提示词小抄」子插件和画画子插件共用这一份逻辑：父插件用 ctx.provide('promptkit') 暴露，
  * 补词配置仍由子插件自己的 data/config.json 管。
  *
+ * NSFW：词库可以带成人分类（id 以 nsfw 开头）。是否可用由配置里的 allowNsfw 决定，默认关闭。
+ * 关闭时这些分类不参与 categories / search / pick / recipe；自动补词永远不碰成人分类，
+ * 无论开关开没开 —— 补词是无人值守往每张图上加词，不该悄悄加成人内容。
+ *
  * SPDX-License-Identifier: AGPL-3.0-only
  * Additional terms under AGPLv3 Section 7: see LICENSE-ADDITIONAL.
  */
@@ -15,6 +19,9 @@ export const WORD_KINDS = ['draw', 'selfie', 'snapshot', 'paint'] as const;
 export type WordKind = (typeof WORD_KINDS)[number];
 export const WORD_LANGS = ['zh', 'en', 'both'] as const;
 
+/** 成人分类：id 以 nsfw 开头（nsfwbody / nsfwcloth / nsfwact / nsfwplay）。 */
+export const isNsfwCategory = (id: string) => /^nsfw/i.test(String(id ?? ''));
+
 export type WordConfig = {
   lang: 'zh' | 'en' | 'both';
   pickCount: number;
@@ -24,6 +31,8 @@ export type WordConfig = {
   enrichKinds: string[];
   enrichLayers: string[];
   enrichCount: number;
+  /** 是否允许查词工具使用 NSFW 分类（默认 false）。自动补词不受它影响，始终不用成人分类。 */
+  allowNsfw: boolean;
 };
 
 const DEFAULT_LAYERS = ['composition', 'lighting', 'pose', 'expression', 'style'];
@@ -39,6 +48,7 @@ export const WORD_DEFAULT: WordConfig = {
   enrichKinds: DEFAULT_ENRICH_KINDS.slice(),
   enrichLayers: DEFAULT_ENRICH_LAYERS.slice(),
   enrichCount: 2,
+  allowNsfw: false,
 };
 
 /** style 分类里只取“质量类”词，避免自动补进 anime / watercolor 这类会改画风的词。 */
@@ -70,11 +80,25 @@ type Data = {
   sample: boolean;
   bytes: number;
   broken: boolean;
+  /** 成人分类 / 词条数量：只用来在页面报数，跟开关无关 */
+  nsfwCategories: number;
+  nsfwTags: number;
 };
 
 /** 一份都没有时的空词库（页面能打开，工具给导入说明）。 */
 function parseEmpty(path: string, broken = false): Data {
-  return { categories: [], tags: [], builtAt: '', byCat: new Map(), path, sample: false, bytes: 0, broken };
+  return {
+    categories: [],
+    tags: [],
+    builtAt: '',
+    byCat: new Map(),
+    path,
+    sample: false,
+    bytes: 0,
+    broken,
+    nsfwCategories: 0,
+    nsfwTags: 0,
+  };
 }
 
 /** 当前词库从哪儿来：自己的文件、随包示例，或两者都没有。 */
@@ -86,6 +110,9 @@ export type WordLibrary = {
   builtAt: string;
   categories: number;
   tags: number;
+  /** 词库里的成人分类数 / 词条数；是否能用由 allowNsfw 决定 */
+  nsfwCategories: number;
+  nsfwTags: number;
   /** 用户自己的词库存在但读不出来（JSON 坏了 / 没有词条），已回退到示例 */
   broken: boolean;
 };
@@ -105,9 +132,12 @@ export function normalizeWordConfig(stored: any, categories: WordCategory[]): Wo
     ? stored.enrichKinds.map(String).filter((id: string) => WORD_KINDS.includes(id as WordKind))
     : WORD_DEFAULT.enrichKinds.slice();
   const enrichLayers = Array.isArray(stored?.enrichLayers)
-    ? stored.enrichLayers.map(String).filter((id: string) => known.has(id) && id !== 'negative')
+    ? stored.enrichLayers
+        .map(String)
+        .filter((id: string) => known.has(id) && id !== 'negative' && !isNsfwCategory(id))
     : WORD_DEFAULT.enrichLayers.slice();
   const enrichCount = Math.min(5, Math.max(1, Number(stored?.enrichCount) || WORD_DEFAULT.enrichCount));
+  const allowNsfw = stored?.allowNsfw === true;
   return {
     lang,
     pickCount,
@@ -117,6 +147,7 @@ export function normalizeWordConfig(stored: any, categories: WordCategory[]): Wo
     enrichKinds,
     enrichLayers,
     enrichCount,
+    allowNsfw,
   };
 }
 
@@ -145,11 +176,12 @@ function tagPresent(hay: string, tag: WordTag) {
   return parts.some((part) => hay.includes(part));
 }
 
-/** 能参与自动补词的词条：质量层只留 SAFE_STYLE，分级/成人词一律跳过。 */
+/** 能参与自动补词的词条：质量层只留 SAFE_STYLE，成人分类和分级词一律跳过。 */
 function usable(tag: WordTag, layer?: string) {
   const zh = String(tag?.zh ?? '').trim();
   const en = String(tag?.en ?? '').trim().toLowerCase();
   if (!zh && !en) return false;
+  if (isNsfwCategory(tag.cat)) return false;
   if (UNSAFE.test(zh) || UNSAFE.test(en)) return false;
   if (layer === 'style' && !SAFE_STYLE.has(en)) return false;
   return true;
@@ -183,7 +215,10 @@ export function createWordEngine(options: { file: string; sample?: string; readC
     } catch {
       return null;
     }
-    const categories: WordCategory[] = (Array.isArray(raw.categories) ? raw.categories : [])
+    // 兼容两种写法：引擎自己的 categories，以及 PromptForge 源数据的 cats。
+    // 用户直接把自己那份源数据丢进 data/ 也能读，不用先跑脚本转格式。
+    const rawCats = Array.isArray(raw.categories) ? raw.categories : Array.isArray(raw.cats) ? raw.cats : [];
+    const categories: WordCategory[] = rawCats
       .filter((c: any) => c && typeof c.id === 'string' && c.id)
       .map((c: any) => ({ id: String(c.id), name: String(c.name ?? c.id) }));
     const tags: WordTag[] = (Array.isArray(raw.tags) ? raw.tags : []).filter(
@@ -198,12 +233,14 @@ export function createWordEngine(options: { file: string; sample?: string; readC
     return {
       categories,
       tags,
-      builtAt: String(raw.builtAt ?? ''),
+      builtAt: String(raw.builtAt ?? raw.generatedAt ?? ''),
       byCat,
       path,
       sample,
       bytes,
       broken,
+      nsfwCategories: categories.filter((c) => isNsfwCategory(c.id)).length,
+      nsfwTags: tags.filter((t) => isNsfwCategory(t.cat)).length,
     };
   };
 
@@ -237,6 +274,8 @@ export function createWordEngine(options: { file: string; sample?: string; readC
       builtAt: data.builtAt,
       categories: data.categories.length,
       tags: data.tags.length,
+      nsfwCategories: data.nsfwCategories,
+      nsfwTags: data.nsfwTags,
       broken: data.broken,
     };
   };
@@ -251,9 +290,16 @@ export function createWordEngine(options: { file: string; sample?: string; readC
     return normalizeWordConfig(stored, load().categories);
   };
 
+  /** 工具能用到的分类：配置里没被禁用，且（成人分类）开关是开着的。 */
   const enabledList = (cfg: WordConfig) => {
     const off = new Set(cfg.disabledCategories);
-    return load().categories.filter((c) => !off.has(c.id));
+    return load().categories.filter((c) => !off.has(c.id) && (cfg.allowNsfw || !isNsfwCategory(c.id)));
+  };
+
+  /** 请求某个分类但拿不到时，说清楚是「被设置关了」还是「成人分类开关没开」。 */
+  const unavailableReason = (cat: string, cfg: WordConfig) => {
+    if (isNsfwCategory(cat) && !cfg.allowNsfw) return '这是成人（NSFW）分类，开关没开；设置页 →「NSFW 分类」里可以打开：' + cat;
+    return '这个分类在设置里关掉了：' + cat;
   };
 
   const stats = (cfg: WordConfig) => {
@@ -264,6 +310,9 @@ export function createWordEngine(options: { file: string; sample?: string; readC
       enabledCategories: enabled.length,
       tags: data.tags.length,
       enabledTags: enabled.reduce((sum, c) => sum + (data.byCat.get(c.id)?.length ?? 0), 0),
+      nsfwCategories: data.nsfwCategories,
+      nsfwTags: data.nsfwTags,
+      allowNsfw: cfg.allowNsfw,
       builtAt: data.builtAt,
       autoEnrich: cfg.autoEnrich,
       enrichKinds: cfg.enrichKinds.slice(),
@@ -284,7 +333,7 @@ export function createWordEngine(options: { file: string; sample?: string; readC
     if (!q) return { status: 'error', error: 'query 不能为空' };
     const enabled = new Set(enabledList(cfg).map((c) => c.id));
     const cat = args?.category ? String(args.category) : '';
-    if (cat && !enabled.has(cat)) return { status: 'error', error: '这个分类在设置里关掉了：' + cat };
+    if (cat && !enabled.has(cat)) return { status: 'error', error: unavailableReason(cat, cfg) };
     const limit = Math.min(20, Math.max(1, Number(args?.limit) || 8));
     const lang = WORD_LANGS.includes(args?.lang) ? args.lang : cfg.lang;
     const hits: any[] = [];
@@ -310,7 +359,7 @@ export function createWordEngine(options: { file: string; sample?: string; readC
     const data = load();
     let pool: WordTag[] = [];
     if (cat) {
-      if (!enabled.some((c) => c.id === cat)) return { status: 'error', error: '这个分类在设置里关掉了：' + cat };
+      if (!enabled.some((c) => c.id === cat)) return { status: 'error', error: unavailableReason(cat, cfg) };
       pool = data.byCat.get(cat) ?? [];
     } else {
       for (const c of enabled) pool = pool.concat(data.byCat.get(c.id) ?? []);
@@ -408,7 +457,13 @@ export function createWordEngine(options: { file: string; sample?: string; readC
     return {
       config: cfg,
       stats: stats(cfg),
-      categories: data.categories.map((c) => ({ id: c.id, name: c.name, count: (data.byCat.get(c.id) ?? []).length })),
+      categories: data.categories.map((c) => ({
+        id: c.id,
+        name: c.name,
+        count: (data.byCat.get(c.id) ?? []).length,
+        /** 页面据此把成人分类和普通分类分开显示、并跟着开关上锁 */
+        nsfw: isNsfwCategory(c.id),
+      })),
       builtAt: data.builtAt,
       library: await library(),
     };
@@ -425,9 +480,11 @@ export function createWordEngine(options: { file: string; sample?: string; readC
     } catch {
       throw Error('不是合法的 JSON');
     }
-    if (!Array.isArray(parsed?.categories) || !parsed.categories.length) throw Error('缺少 categories 数组');
+    // 和 parse 一样兼容 PromptForge 源数据的 cats 写法，免得用户还得先跑脚本转格式。
+    const rawCats = Array.isArray(parsed?.categories) ? parsed.categories : Array.isArray(parsed?.cats) ? parsed.cats : null;
+    if (!rawCats || !rawCats.length) throw Error('缺少 categories 数组');
     if (!Array.isArray(parsed?.tags) || !parsed.tags.length) throw Error('缺少 tags 数组');
-    const categories: WordCategory[] = parsed.categories
+    const categories: WordCategory[] = rawCats
       .filter((c: any) => c && typeof c.id === 'string' && c.id)
       .map((c: any) => ({ id: String(c.id), name: String(c.name ?? c.id) }));
     if (!categories.length) throw Error('categories 里没有合法的分类');
@@ -440,7 +497,9 @@ export function createWordEngine(options: { file: string; sample?: string; readC
     const clean = {
       version: parsed.version ?? 1,
       license: String(parsed.license ?? ''),
-      builtAt: String(parsed.builtAt ?? new Date().toISOString()),
+      source: String(parsed.source ?? ''),
+      note: String(parsed.note ?? ''),
+      builtAt: String(parsed.builtAt ?? parsed.generatedAt ?? new Date().toISOString()),
       categories,
       tags,
     };
