@@ -19,6 +19,8 @@ import { backendName, health, listWorkflows, loadWorkflow, runBackend } from './
 import { requestOf } from './lib/request.ts';
 import type { GenResult } from './lib/types.ts';
 import { renderSettings } from './lib/ui.ts';
+import { deploy, deployBusy, probe, readDeployState, recommend, startComfy } from './lib/setup.ts';
+import { renderSetup } from './lib/setup-ui.ts';
 import { createWordEngine } from './lib/words.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -433,6 +435,118 @@ export function apply(ctx: Context) {
     },
   });
 
+  ctx.tools.register({
+    name: 'studio_env',
+    description:
+      '体检这台机器能不能跑本地 ComfyUI：显卡与显存、内存、磁盘、Python、Git、是否已装 ComfyUI、8188 是否在线。' +
+      '部署或换模型之前先调它；只读，不会装任何东西。',
+    danger: 'safe',
+    schema: {
+      type: 'object',
+      properties: {
+        root: { type: 'string', description: '顺便检查这个 ComfyUI 目录（省略就按默认候选找）' },
+      },
+      additionalProperties: false,
+    },
+    run: async (args: any) => {
+      const cfg = await readConfig();
+      const info = await probe({ baseUrl: cfg.backends.comfy.baseUrl, modelsDirHint: cfg.backends.comfy.modelsDir, pythonHint: cfg.python, root: args?.root });
+      return {
+        status: 'ok',
+        ...info,
+        verdict: info.comfy.exists
+          ? info.comfy.online
+            ? '已有 ComfyUI 且在跑，可以直接出图'
+            : '已有 ComfyUI 但没起，用 studio_deploy 的 start 起一下'
+          : '还没装 ComfyUI；显卡和 Python 齐了就能用 studio_deploy 一键装',
+        hint: '下一步：没装就 action=install；装好没起就 action=start；要挑模型就调 studio_recommend。',
+      };
+    },
+  });
+
+  ctx.tools.register({
+    name: 'studio_recommend',
+    description:
+      '按本机显存和已有权重推荐最合适的本地模型组合：给下载地址、放置目录、对应的步数/CFG/分辨率，' +
+      '本机已存在的权重会标出来并排在最前。只推荐不下载。',
+    danger: 'safe',
+    schema: {
+      type: 'object',
+      properties: {
+        root: { type: 'string', description: 'ComfyUI 目录（省略就按默认候选找）' },
+      },
+      additionalProperties: false,
+    },
+    run: async (args: any) => {
+      const cfg = await readConfig();
+      const info = await probe({ baseUrl: cfg.backends.comfy.baseUrl, modelsDirHint: cfg.backends.comfy.modelsDir, pythonHint: cfg.python, root: args?.root });
+      let inv: ModelInventory | undefined;
+      try {
+        inv = await service.models({ refresh: true });
+      } catch {
+        inv = undefined;
+      }
+      const rec = recommend(info, inv);
+      return {
+        status: 'ok',
+        gpu: rec.gpu,
+        tier: rec.tier,
+        summary: rec.summary,
+        modelsDir: info.comfy.modelsDir || cfg.backends.comfy.modelsDir,
+        items: rec.items.map((item) => ({
+          name: item.name,
+          family: item.family,
+          fit: item.fit,
+          local: item.local,
+          localModel: item.localModel,
+          vramGB: item.vramGB,
+          purpose: item.purpose,
+          files: item.files,
+          workflow: item.workflow,
+          notes: item.notes,
+        })),
+        next: rec.next,
+        hint: '本机已有的直接用 studio_build 配工作流；要下载的按 files 里的目录放好，再 refresh 一次 studio_models。',
+      };
+    },
+  });
+
+  ctx.tools.register({
+    name: 'studio_deploy',
+    description:
+      '一键部署或启动本地 ComfyUI：git clone 官方仓库 → 建 venv → 按驱动装 CUDA 版 torch → 装依赖 → 起 8188。' +
+      'action=status 查进度，start 只启动，install 全量安装（首次要下载几个 G）。' +
+      '不会自动下载模型权重。',
+    danger: 'ask',
+    schema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['status', 'start', 'install'], description: 'status 查状态（默认）；start 只启动；install 全量部署' },
+        root: { type: 'string', description: '安装目录，默认 D:\\ComfyUI' },
+        confirm: { type: 'boolean', description: 'install / start 必须显式传 true' },
+      },
+      additionalProperties: false,
+    },
+    run: async (args: any) => {
+      const action = String(args?.action ?? 'status');
+      const cfg = await readConfig();
+      if (action === 'status') {
+        const state = readDeployState(dataDir);
+        return { status: 'ok', busy: deployBusy(), state, url: cfg.backends.comfy.baseUrl };
+      }
+      if (args?.confirm !== true) return { status: 'error', error: `${action} 会动磁盘和网络，要传 confirm: true` };
+      if (deployBusy()) return { status: 'error', error: '已有部署任务在跑，先用 status 看进度' };
+      const root = (String(args?.root ?? '').trim() || readDeployState(dataDir).root || 'D:\\ComfyUI');
+      const task = action === 'start' ? startComfy(root, dataDir, cfg.backends.comfy.baseUrl) : deploy(root, dataDir, { baseUrl: cfg.backends.comfy.baseUrl });
+      void task
+        .then(async (state) => {
+          if (state.state === 'running') await adoptComfy(state.root || root);
+        })
+        .catch(() => undefined);
+      return { status: 'ok', state: readDeployState(dataDir), hint: '已在后台跑，用 action=status 或部署页看进度。' };
+    },
+  });
+
   const json = (res: any, code: number, value: any) => {
     res.statusCode = code;
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
@@ -457,6 +571,28 @@ export function apply(ctx: Context) {
     }
   };
 
+  const adoptComfy = async (root: string) => {
+    const current = await readConfig();
+    const next = applyPatch(current, {
+      backends: {
+        comfy: {
+          enabled: true,
+          modelsDir: join(root, 'models'),
+          canvasDir: join(root, 'user', 'default', 'workflows'),
+        },
+      },
+    });
+    await ctx.config.save('config.json', next);
+  };
+
+  const tailOf = (file: string, max = 4000) => {
+    try {
+      return readFileSync(file, 'utf8').slice(-max);
+    } catch {
+      return '';
+    }
+  };
+
   ctx.web.page(
     BASE + 'settings',
     async (_req, res, { signal }) => {
@@ -476,6 +612,111 @@ export function apply(ctx: Context) {
     },
     { title: '画室设置', settings: true, navigation: true },
   );
+
+  ctx.web.page(
+    BASE + 'setup',
+    async (_req, res, { signal }) => {
+      const cfg = await readConfig();
+      const info = await probe({ baseUrl: cfg.backends.comfy.baseUrl, modelsDirHint: cfg.backends.comfy.modelsDir, pythonHint: cfg.python });
+      signal.throwIfAborted();
+      let inv: ModelInventory | undefined;
+      try {
+        inv = await service.models({});
+      } catch {
+        inv = undefined;
+      }
+      const state = readDeployState(dataDir);
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.setHeader('Cache-Control', 'no-store');
+      res.end(
+        renderSetup({
+          probe: info,
+          rec: recommend(info, inv),
+          state: { ...state, logTail: tailOf(join(dataDir, 'logs', 'deploy.log')) },
+          busy: deployBusy(),
+        }),
+      );
+    },
+    { title: '本地部署', navigation: true },
+  );
+
+  ctx.web.api(BASE + 'setup/probe', async (req, res, { signal }) => {
+    try {
+      await readBody(req, signal);
+      const cfg = await readConfig();
+      const info = await probe({ baseUrl: cfg.backends.comfy.baseUrl, modelsDirHint: cfg.backends.comfy.modelsDir, pythonHint: cfg.python });
+      let inv: ModelInventory | undefined;
+      try {
+        inv = await service.models({ refresh: true });
+      } catch {
+        inv = undefined;
+      }
+      json(res, 200, { ok: true, probe: info, rec: recommend(info, inv) });
+    } catch (error: any) {
+      json(res, 200, { ok: false, error: String(error?.message ?? error).slice(0, 300) });
+    }
+  });
+
+  ctx.web.api(BASE + 'setup/status', async (req, res, { signal }) => {
+    try {
+      await readBody(req, signal);
+      const state = readDeployState(dataDir);
+      json(res, 200, { ok: true, busy: deployBusy(), state: { ...state, logTail: tailOf(join(dataDir, 'logs', 'deploy.log')) } });
+    } catch (error: any) {
+      json(res, 200, { ok: false, error: String(error?.message ?? error).slice(0, 300) });
+    }
+  });
+
+  ctx.web.api(BASE + 'setup/deploy', async (req, res, { signal }) => {
+    try {
+      const body = await readBody(req, signal);
+      if (deployBusy()) return json(res, 409, { ok: false, error: '已有部署任务在跑，先看进度' });
+      const action = String(body?.action ?? body?.mode ?? 'install');
+      const root = String(body?.root ?? '').trim() || 'D:\\ComfyUI';
+      const cfg = await readConfig();
+      const task =
+        action === 'start'
+          ? startComfy(root, dataDir, cfg.backends.comfy.baseUrl)
+          : deploy(root, dataDir, { baseUrl: cfg.backends.comfy.baseUrl });
+      void task
+        .then(async (state) => {
+          if (state.state === 'running') await adoptComfy(state.root || root);
+        })
+        .catch(() => undefined);
+      json(res, 200, { ok: true, state: readDeployState(dataDir) });
+    } catch (error: any) {
+      json(res, 400, { ok: false, error: String(error?.message ?? error).slice(0, 300) });
+    }
+  });
+
+  ctx.web.api(BASE + 'setup/build', async (req, res, { signal }) => {
+    try {
+      const body = await readBody(req, signal);
+      const model = String(body?.model ?? '').trim();
+      if (!model) return json(res, 400, { ok: false, error: '缺少 model（本机权重文件名）' });
+      const inv = await service.models({});
+      const known = [...inv.checkpoints, ...inv.unets, ...inv.vaes, ...inv.clips].some((item) => item.name === model);
+      if (!known) return json(res, 400, { ok: false, error: `本机没有这份权重：${model}` });
+      const isCheckpoint = inv.checkpoints.some((item) => item.name === model);
+      const built = buildWorkflow(
+        {
+          prompt: 'a photo of a young woman, natural light',
+          ...(isCheckpoint ? { checkpoint: model } : { unet: model }),
+          family: body?.family ? String(body.family) : undefined,
+        },
+        inv,
+      );
+      if (built.error) return json(res, 400, { ok: false, error: built.error });
+      const paths = await pathsOf();
+      mkdirSync(paths.workflowsDir, { recursive: true });
+      const base = model.replace(/[^\w\u4e00-\u9fa5.-]+/g, '-').replace(/\.safetensors$/i, '');
+      const file = `推荐-${built.family}-${base}.json`;
+      writeFileSync(join(paths.workflowsDir, file), JSON.stringify(built.api, null, 2), 'utf8');
+      json(res, 200, { ok: true, file, family: built.family, used: built.used, defaults: built.defaults, nodes: Object.keys(built.api).length });
+    } catch (error: any) {
+      json(res, 400, { ok: false, error: String(error?.message ?? error).slice(0, 300) });
+    }
+  });
 
   ctx.web.api(BASE + 'config', async (req, res, { signal }) => {
     try {

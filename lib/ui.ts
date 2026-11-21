@@ -153,7 +153,7 @@ pre{background:var(--soft);border:1px solid var(--line);border-radius:8px;paddin
 @media (max-width:560px){.grid{grid-template-columns:1fr}body{padding:18px 14px 26px}}
 </style></head><body><main>
 <header class="top">
-  <div><h1>画室</h1><p class="sub">六种后端 · 子插件分「画画」和「拍视频」</p></div>
+  <div><h1>画室</h1><p class="sub">六种后端 · 子插件分「画画」和「拍视频」 · <a href="/plugins/studio/setup">本机部署与模型推荐</a></p></div>
   <div class="right"><button type="button" id="refresh">刷新</button><button type="button" class="primary" id="save">保存</button></div>
 </header>
 

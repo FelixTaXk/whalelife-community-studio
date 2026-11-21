@@ -10,6 +10,7 @@
 工具名：
 
 - 父级：`studio_status`（体检）/ `studio_workflow`（查槽位）/ `studio_models`（本地模型清单）/ `studio_build`（按模型拼工作流）
+- 部署：`studio_env`（硬件与环境体检）/ `studio_recommend`（按显存推荐模型与放置目录）/ `studio_deploy`（一键装或启动 ComfyUI）
 - 画画：`draw` / `draw_batch` / `draw_task` / `image_view` / `image_mask` / `image_workflows`
 - 拍视频：`make_video` / `video_task` / `video_workflows`
 
@@ -38,6 +39,20 @@
 ```
 
 **哪些功能需要词库**：四个查词工具（`prompt_categories` / `prompt_search` / `prompt_pick` / `prompt_recipe`）和出图前的「自动补词」。画图、拍视频、模型清单、按模型拼工作流都不依赖词库，只是少了一层现成的词。从自己的源数据重建词库用 `node sub/promptkit/scripts/build-data.mjs`。
+
+## 本机部署与模型推荐
+
+设置页右上角的「本机部署与模型推荐」进 `/plugins/studio/setup`，也可以直接用工具：
+
+- `studio_env`：读显卡/显存、内存、磁盘、Python、Git，以及本机是否已有 ComfyUI、8188 是否在线。只读。
+- `studio_recommend`：按显存分档（24G+ / 16–24G / 11–16G / 7–11G / 4–7G / CPU）给出模型组合，列清每个权重要放哪个
+  `models` 子目录、下载地址和对应步数/CFG/分辨率。**本机已有的权重会标出来并排在最前**；不自动下载大模型。
+- `studio_deploy`：`action=install` 首次部署（git clone 官方 ComfyUI → venv → 按驱动装 CUDA 12.4/12.1/11.8 版 torch →
+  requirements → 起 8188），`action=start` 只启动，`action=status` 看进度。装完会把 `modelsDir` / `canvasDir` 写回配置。
+- 页面上的「生成这套工作流」用本机已有的权重调 `studio_build`，存到 `data/workflows/推荐-<家族>-<模型>.json`。
+
+部署只装 ComfyUI 本体和 Python 依赖（首次约 2–4G），**不代下模型权重**；没有 Python 或 Git 时会返回安装指引，不会硬装系统组件。
+
 
 ## 给其他插件用
 
