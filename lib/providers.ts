@@ -180,7 +180,8 @@ async function runComfy(req: GenRequest, ctx: ProviderContext): Promise<GenResul
   const autoBuild = Boolean(req.model || req.family || (req.loras ?? []).length) && !preferred && Boolean(ctx.modelsDir || modelsDir);
   // 给了参考图又没指定工作流：走 MOSS-Image Edit 现拼（不需要训角色 LoRA 也能锁住同一张脸）。
   const refImages = [req.image, ...(req.refs ?? [])].filter((item): item is string => Boolean(item));
-  const autoEdit = refImages.length > 0 && !preferred;
+  const forceEdit = refImages.length > 0 && req.extra?.face_lock === true;
+  const autoEdit = refImages.length > 0 && (!preferred || forceEdit);
   let name = preferred;
   let workflow: Record<string, any> | null = null;
   let prepared = false;

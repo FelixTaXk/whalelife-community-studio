@@ -3,7 +3,7 @@
  * Additional terms under AGPLv3 Section 7: see LICENSE-ADDITIONAL.
  */
 import { existsSync, readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Context, MultimodalToolOutput } from 'whalelife';
 import { backendName, runBackend, type ProviderContext } from '../../lib/providers.ts';
@@ -203,7 +203,12 @@ export async function apply(ctx: Context) {
     // 没给参考图、但设置里存了定妆照：默认拿它锁脸（只在自拍这类「必须是本人」的动作上生效）。
     const lockFace = anchor === true || anchor === 'full';
     const lockLora = lockFace || anchor === 'lora';
-    if (lockFace && !req.image && !(req.refs ?? []).length && cfg.faceRef) req.image = String(cfg.faceRef);
+    if (lockFace && !req.image && !(req.refs ?? []).length && cfg.faceRef) {
+      const ref = String(cfg.faceRef);
+      const pluginRoot = dirname(paths.dataDir);
+      req.image = isAbsolute(ref) ? ref : join(pluginRoot, ref);
+      req.extra = { ...(req.extra ?? {}), face_lock: true };
+    }
     // 没定妆照、但有角色 LoRA：直接接 LoRA 出图（给 family，插件自己挑 moss 底模）。
     if (lockLora && cfg.faceLora) {
       req.loras = [{ name: String(cfg.faceLora), strength: Number(cfg.faceLoraStrength ?? 0.85) }];
