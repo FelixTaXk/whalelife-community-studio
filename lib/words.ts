@@ -9,7 +9,7 @@
  * Additional terms under AGPLv3 Section 7: see LICENSE-ADDITIONAL.
  */
 import { mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { dirname, join } from 'node:path';
 
 export const WORD_KINDS = ['draw', 'selfie', 'snapshot', 'paint'] as const;
 export type WordKind = (typeof WORD_KINDS)[number];

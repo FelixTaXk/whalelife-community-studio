@@ -37,12 +37,12 @@
 - 本插件：注册工具、设置页和导入 API，配置写在自己的 `data/config.json`；
 - 画画子插件：在 `optionalDepends` 里声明 `promptkit`，用 `ctx.optional('promptkit', …)` 拿到服务。
 
-词库查找顺序：`data/prompts.json`（用户自己的）→ `data/prompts.sample.json`（随包示例）→ 空词库。
+词库查找顺序：`data/prompts.json`（用户自己的）→ `assets/prompts.sample.json`（随包示例）→ 空词库。
 父级平时只读；只有用户在设置页点「导入词库」时才会写 `data/prompts.json`。
 
 ## 数据与重建
 
-- **随包示例**：`data/prompts.sample.json`，11 个分类、130 条通用词，自撰，CC0-1.0；
+- **随包示例**：`assets/prompts.sample.json`，11 个分类、130 条通用词，自撰，CC0-1.0；
 - **自己的词库**：`data/prompts.json`（不入 git），可以从自己的源数据重建；
 - 重建：`node scripts/build-data.mjs`（读 `FORGE_SRC` 指向的源数据，默认 `D:/dafeiyu/fish-extra/lib/forge-data.json`，只读不改源文件）。
 
@@ -79,5 +79,5 @@
 
 ## 许可
 
-随包示例词库 `data/prompts.sample.json` 为本项目自撰，CC0-1.0，可自由复制、修改、再分发。
+随包示例词库 `assets/prompts.sample.json` 为本项目自撰，CC0-1.0，可自由复制、修改、再分发。
 用户自己导入的 `data/prompts.json` 版权归其来源方，不进本仓库、不再分发。

@@ -27,8 +27,8 @@
 
 词库是可选的，父插件**始终**注册 `promptkit` 服务，不会因为缺文件就跳过。
 
-- **随包示例词库**：`sub/promptkit/data/prompts.sample.json`，自撰的 130 条通用词（构图 / 光影 / 姿势 / 表情 / 服装 / 场景 / 道具 / 镜头 / 氛围 / 风格质量 / 负面），授权 CC0-1.0，可自由再分发。装完即用，够跑通首次打开设置页和四个查词工具。
-- **自己的词库**：优先读 `sub/promptkit/data/prompts.json`。可以在设置页上传 JSON 导入，也可以把文件直接放进该目录后点「重新载入数据」；它不会进 git（`.gitignore` 只放行示例词库），私有原始词库可以留在本地。
+- **随包示例词库**：`sub/promptkit/assets/prompts.sample.json`，自撰的 130 条通用词（构图 / 光影 / 姿势 / 表情 / 服装 / 场景 / 道具 / 镜头 / 氛围 / 风格质量 / 负面），授权 CC0-1.0，可自由再分发。装完即用，够跑通首次打开设置页和四个查词工具。
+- **自己的词库**：优先读 `sub/promptkit/data/prompts.json`。可以在设置页上传 JSON 导入，也可以把文件直接放进该目录后点「重新载入数据」；它不会进 git（`sub/promptkit/data/` 已被忽略），私有原始词库可以留在本地。
 - **两份都没有 / JSON 坏了**：页面照常打开（200），显示导入说明和导入入口，工具返回“词库还没准备好”的说明；自己的词库坏了会自动回退到示例词库并在页面上提示。
 
 词库格式：
@@ -348,4 +348,4 @@ qq_send_gallery             → parts: [{"type":"image","id":galleryId}, {"type"
 4. 在「插件管理」确认状态为「运行中」；首次使用请打开插件设置页完成必要配置。
 5. 打开 `/plugins/studio/promptkit/settings` 应能直接看到页面（显示「随包示例词库」）。想用自己的词库，在那个页面导入 JSON，或把 `prompts.json` 放进 `sub/promptkit/data/`。
 
-本插件不包含任何运行时数据（`data/` 已被忽略，只放行 `sub/promptkit/data/prompts.sample.json` 这份示例词库），升级时直接覆盖源码即可保留你自己的配置。
+本插件不包含任何运行时数据（`data/` 已被忽略），示例词库放在 `sub/promptkit/assets/` 随包分发；升级时直接覆盖源码即可保留你自己的配置。

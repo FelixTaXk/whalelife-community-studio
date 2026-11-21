@@ -9,7 +9,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  * Additional terms under AGPLv3 Section 7: see LICENSE-ADDITIONAL.
  */
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Context } from 'whalelife';
@@ -23,7 +23,9 @@ const API_RESET = '/plugins/studio/promptkit/reset-library';
 const API_SAMPLE = '/plugins/studio/promptkit/sample';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const SAMPLE_FILE = join(HERE, 'data', 'prompts.sample.json');
+const SAMPLE_FILE = join(HERE, 'assets', 'prompts.sample.json');
+/** 旧版本把示例放在 data/ 下；官方包里 data 会被跳过，这里只做向后兼容 */
+const SAMPLE_LEGACY = join(HERE, 'data', 'prompts.sample.json');
 
 type LibraryInfo = {
   path: string;
@@ -55,7 +57,7 @@ type PageData = {
 };
 
 const NO_LIBRARY_HINT =
-  '词库还没准备好：打开「提示词小抄」设置页导入自己的词库，或直接用随包示例词库（data/prompts.sample.json）。';
+  '词库还没准备好：打开「提示词小抄」设置页导入自己的词库，或直接用随包示例词库（assets/prompts.sample.json）。';
 
 const KIND_LABEL: Record<string, string> = {
   draw: '画图 draw',
@@ -107,7 +109,7 @@ function renderPage(data: PageData, notice = '') {
       ? `<div class="banner ok">正在用你自己的词库：<code>${esc(libPath)}</code> · ${lib.tags} 条词 · ${libSize}</div>`
       : libState === 'sample'
         ? `<div class="banner info">现在用的是<b>随包示例词库</b>（${lib.tags} 条词，CC0-1.0，可自由再分发）。导入自己的词库会覆盖它，随时能再切回来。</div>`
-        : `<div class="banner warn">还没找到词库。在下面「词库」卡片里导入一份，或确认安装包带了 <code>sub/promptkit/data/prompts.sample.json</code>。四个查词工具和自动补词会先空着，画图本身不受影响。</div>`;
+        : `<div class="banner warn">还没找到词库。在下面「词库」卡片里导入一份，或确认安装包带了 <code>sub/promptkit/assets/prompts.sample.json</code>。四个查词工具和自动补词会先空着，画图本身不受影响。</div>`;
   const brokenHtml =
     lib?.broken && libState === 'sample'
       ? `<div class="banner warn">你自己的 <code>${esc(join(HERE, 'data', 'prompts.json'))}</code> 读不出来（不是合法 JSON 或没有可用词条），已经先回退到示例词库；重新导入一份就能覆盖。</div>`
@@ -518,14 +520,16 @@ export function apply(ctx: Context) {
 
   ctx.web.api(API_SAMPLE, async (_req: any, res: any) => {
     try {
-      const raw = readFileSync(SAMPLE_FILE, 'utf8');
+      const file = [SAMPLE_FILE, SAMPLE_LEGACY].find((path) => existsSync(path));
+      if (!file) throw Error('missing');
+      const raw = readFileSync(file, 'utf8');
       res.statusCode = 200;
       res.setHeader('Content-Type', 'application/json; charset=utf-8');
       res.setHeader('Content-Disposition', 'attachment; filename="prompts.sample.json"');
       res.setHeader('Cache-Control', 'no-store');
       res.end(raw);
     } catch {
-      json(res, 404, { ok: false, error: '安装包里没有示例词库（sub/promptkit/data/prompts.sample.json）' });
+      json(res, 404, { ok: false, error: '安装包里没有示例词库（sub/promptkit/assets/prompts.sample.json）' });
     }
   });
 

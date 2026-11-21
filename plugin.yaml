@@ -1,6 +1,6 @@
 id: studio
 name: 画室
-version: 0.2.1
+version: 0.2.2
 description: 画画与拍视频的通用后端：一套配置接本机 ComfyUI / SD-WebUI 与 OpenAI 兼容、Gemini、通义万相；用子插件分开「画画」「拍视频」和「提示词小抄」
 apiVersion: "1.0.0"
 sub: [image, video, promptkit]
