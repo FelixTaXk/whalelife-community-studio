@@ -129,12 +129,13 @@ function renderPage(data: PageData, notice = '') {
   const libState = !lib || !lib.exists ? 'none' : lib.sample ? 'sample' : 'own';
   const libPath = lib?.path || 'data/prompts.json';
   const libSize = lib?.bytes ? `${(lib.bytes / 1024).toFixed(lib.bytes > 1024 * 1024 ? 0 : 1)} KB` : '—';
+  // 用自己的词库时不挂横幅（词库卡片里已经有来源/文件/条数）；示例和缺词库才提示。
   const banner =
-    libState === 'own'
-      ? `<div class="banner ok">正在用你自己的词库：<code>${esc(libPath)}</code> · ${lib.tags} 条词 · ${libSize}</div>`
-      : libState === 'sample'
-        ? `<div class="banner info">现在用的是<b>随包示例词库</b>（${lib.tags} 条词，CC0-1.0，可自由再分发）。导入自己的词库会覆盖它，随时能再切回来。</div>`
-        : `<div class="banner warn">还没找到词库。在下面「词库」卡片里导入一份，或确认安装包带了 <code>sub/promptkit/assets/prompts.sample.json</code>。四个查词工具和自动补词会先空着，画图本身不受影响。</div>`;
+    libState === 'sample'
+      ? `<div class="banner info">现在用的是<b>随包示例词库</b>（${lib.tags} 条词，CC0-1.0，可自由再分发）。导入自己的词库会覆盖它，随时能再切回来。</div>`
+      : libState === 'none'
+        ? `<div class="banner warn">还没找到词库。在下面「词库」卡片里导入一份，或确认安装包带了 <code>sub/promptkit/assets/prompts.sample.json</code>。四个查词工具和自动补词会先空着，画图本身不受影响。</div>`
+        : '';
   const brokenHtml =
     lib?.broken && libState === 'sample'
       ? `<div class="banner warn">你自己的 <code>${esc(join(HERE, 'data', 'prompts.json'))}</code> 读不出来（不是合法 JSON 或没有可用词条），已经先回退到示例词库；重新导入一份就能覆盖。</div>`
@@ -146,27 +147,26 @@ function renderPage(data: PageData, notice = '') {
   const enrichSet = new Set(cfg.enrichLayers);
   const nsfwCats = lib?.nsfwCategories ?? s.nsfwCategories ?? 0;
   const nsfwCount = lib?.nsfwTags ?? s.nsfwTags ?? 0;
-  /** 成人分类统一标注；总闸关着时再补一句说明 */
-  const nsfwHint = (locked: boolean, nsfw: boolean) => (!nsfw ? '' : locked ? ' · 🔞 总闸关着' : ' · 🔞 NSFW');
+  /** 成人分类统一标注；总闸关着时整行隐藏，所以不用再写"总闸关着"。 */
+  const nsfwHint = (nsfw: boolean) => (nsfw ? ' · 🔞 NSFW' : '');
   const catRows = data.categories
     .map((c) => {
       const locked = c.nsfw && !cfg.allowNsfw;
-      return `<label class="check${locked ? ' locked' : ''}"><input type="checkbox" name="cat" value="${esc(c.id)}"${
-        off.has(c.id) ? '' : ' checked'
-      }${locked ? ' disabled' : ''} data-nsfw="${c.nsfw ? '1' : '0'}"><span>${esc(c.name)}<em>${c.count} 条${nsfwHint(
-        locked,
-        c.nsfw,
-      )}</em></span></label>`;
+      return `<label class="check${locked ? ' locked' : ''}"${locked ? ' hidden' : ''}><input type="checkbox" name="cat" value="${esc(
+        c.id,
+      )}"${off.has(c.id) ? '' : ' checked'}${locked ? ' disabled' : ''} data-nsfw="${c.nsfw ? '1' : '0'}"><span>${esc(
+        c.name,
+      )}<em>${c.count} 条${nsfwHint(c.nsfw)}</em></span></label>`;
     })
     .join('');
   const layerRows = data.categories
     .map((c) => {
       const locked = c.nsfw && !cfg.allowNsfw;
       const blocked = c.id === 'negative';
-      const why = blocked ? ' · 负面词不参与配方' : nsfwHint(locked, c.nsfw);
-      return `<label class="check${locked ? ' locked' : ''}${blocked ? ' disabled' : ''}"><input type="checkbox" name="layer" value="${esc(
-        c.id,
-      )}"${layerSet.has(c.id) ? ' checked' : ''}${
+      const why = blocked ? ' · 负面词不参与配方' : nsfwHint(c.nsfw);
+      return `<label class="check${locked ? ' locked' : ''}${blocked ? ' disabled' : ''}"${
+        locked ? ' hidden' : ''
+      }><input type="checkbox" name="layer" value="${esc(c.id)}"${layerSet.has(c.id) ? ' checked' : ''}${
         locked || blocked ? ' disabled' : ''
       } data-nsfw="${c.nsfw ? '1' : '0'}"><span>${esc(c.name)}<em>${esc(c.id)}${why}</em></span></label>`;
     })
@@ -180,12 +180,13 @@ function renderPage(data: PageData, notice = '') {
   const enrichRows = data.categories
     .map((c) => {
       const blocked = c.id === 'negative' || c.nsfw;
+      const hidden = c.nsfw && !cfg.allowNsfw;
       const why = c.id === 'negative' ? ' · 负面词不参与' : c.nsfw ? ' · 自动补词不用成人分类' : '';
-      return `<label class="check${blocked ? ' disabled' : ''}"><input type="checkbox" name="elayer" value="${esc(
+      return `<label class="check${blocked ? ' disabled' : ''}"${hidden ? ' hidden' : ''}><input type="checkbox" name="elayer" value="${esc(
         c.id,
-      )}"${enrichSet.has(c.id) ? ' checked' : ''}${blocked ? ' disabled' : ''}><span>${esc(
-        c.name,
-      )}<em>${esc(c.id)}${why}</em></span></label>`;
+      )}"${enrichSet.has(c.id) ? ' checked' : ''}${blocked ? ' disabled' : ''} data-nsfw="${
+        c.nsfw ? '1' : '0'
+      }"><span>${esc(c.name)}<em>${esc(c.id)}${why}</em></span></label>`;
     })
     .join('');
   return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -231,6 +232,7 @@ th{color:var(--muted);font-weight:500;width:130px}
 .banner.warn{border-color:#e8cfa2;background:#fdf7ea;color:#7a5a1e}
 .banner.danger{border-color:#e2b4b4;background:#fdf0f0;color:#8a2b2b;font-weight:500}
 label.check.locked{opacity:.5;cursor:not-allowed;border-style:dashed}
+label.check[hidden]{display:none}
 .nsfw-row{display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px dashed var(--line);border-radius:10px;margin-top:10px}
 @media(max-width:640px){.grid,.checks{grid-template-columns:1fr}}
 </style></head><body><main>
@@ -302,7 +304,9 @@ ${banner}${brokenHtml}${noticeHtml}${nsfwBanner}
   <p class="hint">默认四个动作都补，但只补「质量与风格」里的质量词（杰作/最佳质量/高分辨率等）；自拍/随手拍/画一幅的构图和镜头不会被改。想要更多细节可以把光影、场景等层勾上，也可以单独关掉某个动作。</p>
   <div class="checks">${kindRows}</div>
   <h3>从哪些层补</h3>
-  <p class="hint">负面词和成人分类都不参与自动补词，这两类已禁用选择。</p>
+  <p class="hint">${
+    cfg.allowNsfw ? '负面词和成人分类都不参与自动补词，这两类已禁用选择。' : '负面词不参与自动补词，“负面”那一类已禁用选择。'
+  }</p>
   <div class="checks">${enrichRows}</div>
 </section>
 
@@ -347,14 +351,19 @@ const nsfwBox = $('#allowNsfw');
 const nsfwWarn = $('#nsfwWarn');
 const NSFW_TEXT = ${JSON.stringify(NSFW_WARNING)};
 const NSFW_COUNT = ${nsfwCount};
-// 总闸关着时，成人分类的勾选框一起上锁；保存时跳过它们，保留原来的状态。
+// 总闸关着时，成人分类整行隐藏；保存时跳过它们，保留原来的状态。
 function syncNsfw() {
   const on = Boolean(nsfwBox && nsfwBox.checked);
   if (nsfwWarn) nsfwWarn.hidden = !on;
   document.querySelectorAll('input[data-nsfw="1"]').forEach((x) => {
-    x.disabled = !on;
     const label = x.closest('label');
-    if (label) label.classList.toggle('locked', !on);
+    const isEnrich = x.name === 'elayer';
+    if (label) {
+      label.hidden = !on;
+      label.classList.toggle('locked', !on && !isEnrich);
+    }
+    // 补词层的成人分类本来就是禁用；其余跟着总闸走
+    if (!isEnrich) x.disabled = !on;
   });
 }
 if (nsfwBox) {

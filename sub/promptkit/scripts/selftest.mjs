@@ -147,12 +147,16 @@ cfg = { ...cfg, allowNsfw: false };
 let html = await page();
 ok('页面：有 NSFW 开关', html.includes('id="allowNsfw"'));
 ok('页面：关闭态警告隐藏', html.includes('id="nsfwWarn" hidden'));
-ok('页面：关闭态成人分类上锁', (html.match(/name="cat" value="nsfw[^"]*"[^>]*disabled/g) || []).length === 4);
+ok('页面：关闭态成人分类整行隐藏', (html.match(/hidden><input type="checkbox" name="cat" value="nsfw/g) || []).length === 4);
+ok('页面：关闭态补词提示不提成人分类', !html.includes('负面词和成人分类'));
+ok('页面：不显示“正在用你自己的词库”横幅', !html.includes('正在用你自己的词库'));
 ok('页面：负面分类在配方层禁用', /name="layer" value="negative"[^>]*disabled/.test(html));
 ok('页面：开启要确认', html.includes('window.confirm'));
 cfg = { ...cfg, allowNsfw: true };
 html = await page();
 ok('页面：开启后显示警告横幅', html.includes('id="nsfwWarn">🔞'));
+ok('页面：开启后成人分类不再隐藏', !/hidden><input type="checkbox" name="cat" value="nsfw/.test(html));
+ok('页面：开启后补词提示提到成人分类', html.includes('负面词和成人分类'));
 
 // ---------- 8. 工具结果说明用哪份词库 ----------
 const catsResult = await tools.get('prompt_categories').run();
