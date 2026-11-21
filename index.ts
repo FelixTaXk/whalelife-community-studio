@@ -39,7 +39,7 @@ export type WorkflowEntry = {
 export type StudioService = {
   config(): Promise<StudioConfig>;
   save(patch: any): Promise<StudioConfig>;
-  paths(): Promise<{ dataDir: string; outDir: string; workflowsDir: string; canvasDir: string; modelsDir: string; mappingsDir: string; python: string; script: string }>;
+  paths(): Promise<{ dataDir: string; pluginsRoot: string; outDir: string; workflowsDir: string; canvasDir: string; modelsDir: string; mappingsDir: string; python: string; script: string }>;
   /** 列出能用工作流（插件目录 + ComfyUI 画布目录两边），可选只挑出图或只挑出视频的。 */
   workflows(options?: { kind?: 'image' | 'video'; probe?: boolean }): Promise<WorkflowEntry[]>;
   /** 本地模型清单（ComfyUI 认得的 + 文件系统兜底）。 */
@@ -89,6 +89,7 @@ export function apply(ctx: Context) {
     const modelsDir = configuredModels ? abs(configuredModels, '') : guessDir('models');
     return {
       dataDir,
+      pluginsRoot: dirname(HERE),
       outDir: abs(cfg.outputDir, 'out'),
       workflowsDir: abs(cfg.backends.comfy.workflowsDir, 'workflows'),
       canvasDir: canvasDir && existsSync(canvasDir) ? canvasDir : '',

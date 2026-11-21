@@ -1,6 +1,6 @@
-﻿id: image
+id: image
 name: 画画
-version: 0.1.2
+version: 0.1.3
 description: 用画室配好的任一后端出图（本机小桥 / ComfyUI / SD-WebUI / OpenAI 兼容 / Gemini / 通义万相），附带原图坐标刻度和蒙版生成
 apiVersion: "1.0.0"
 depends: [studio, tools]

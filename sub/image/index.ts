@@ -8,7 +8,8 @@ import { fileURLToPath } from 'node:url';
 import type { Context, MultimodalToolOutput } from 'whalelife';
 import { backendName, runBackend, type ProviderContext } from '../../lib/providers.ts';
 import { requestOf } from '../../lib/request.ts';
-import { SIZE_FOR, paintPrompt, selfiePrompt, snapshotPrompt, type ShootKind } from './lib/look.ts';
+import { SIZE_FOR, normalizePaintingStyle, paintPrompt, selfPortraitPrompt, selfiePrompt, snapshotPrompt, type ShootKind } from './lib/look.ts';
+import { randomPaintingStyle, randomSubject, resolveSelfieContext, resolveSnapshotContext } from './lib/context.ts';
 import { runImgtool } from '../../lib/media.ts';
 import { renderImageSettings } from '../../lib/sub-settings.ts';
 import { describeTask, TaskBox } from '../../lib/tasks.ts';
@@ -21,7 +22,7 @@ const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
 type StudioService = {
   config(): Promise<any>;
   save(patch: any): Promise<any>;
-  paths(): Promise<{ dataDir: string; outDir: string; workflowsDir: string; canvasDir: string; modelsDir: string; mappingsDir: string; python: string; script: string }>;
+  paths(): Promise<{ dataDir: string; pluginsRoot: string; outDir: string; workflowsDir: string; canvasDir: string; modelsDir: string; mappingsDir: string; python: string; script: string }>;
   workflows(options?: { kind?: 'image' | 'video' }): Promise<
     Array<{ name: string; format: 'api' | 'canvas'; kind?: 'image' | 'video'; slots?: string; notes?: string[]; error?: string }>
   >;
@@ -34,6 +35,8 @@ type PromptkitService = {
   enrich?(input: { text: string; kind?: string; signal?: AbortSignal }): Promise<
     { text?: string; added?: Array<{ cat?: string; word?: string }>; skipped?: string } | null
   >;
+  /** 随机配方：按小抄选中的层各挑一个词，用来给「随便画」补完整内容。 */
+  recipe?(input: { extra?: string; lang?: string; layers?: string[] }): Promise<{ status?: string; text?: string; layers?: any[] } | null>;
   /** 共用负面提示词；空串表示没设置（不覆盖工作流自带的负面）。 */
   negativePrompt?(): Promise<string>;
 };
@@ -163,7 +166,7 @@ export async function apply(ctx: Context) {
     text: string,
     preset: Partial<GenRequest> = {},
     waitDefault = 180,
-    useFace = false,
+    anchor: boolean | 'full' | 'lora' | 'none' = false,
     kind: 'draw' | 'selfie' | 'snapshot' | 'paint' = 'draw',
   ) => {
     const cfg = await studio().config();
@@ -185,10 +188,12 @@ export async function apply(ctx: Context) {
       req.prompt = enriched.text;
       promptNotes.push(`小抄补词：${enriched.added.map((item) => item.word).join(', ')}`);
     }
-    // 没给参考图、但设置里存了她的定妆照：默认拿它锁脸（只在自拍/画她这类「必须是她」的动作上生效）。
-    if (useFace && !req.image && !(req.refs ?? []).length && cfg.faceRef) req.image = String(cfg.faceRef);
+    // 没给参考图、但设置里存了她的定妆照：默认拿它锁脸（只在自拍这类「必须是她」的动作上生效）。
+    const lockFace = anchor === true || anchor === 'full';
+    const lockLora = lockFace || anchor === 'lora';
+    if (lockFace && !req.image && !(req.refs ?? []).length && cfg.faceRef) req.image = String(cfg.faceRef);
     // 没定妆照、但有她的角色 LoRA：直接接 LoRA 出图（给 family，插件自己挑 moss 底模）。
-    if (useFace && cfg.faceLora) {
+    if (lockLora && cfg.faceLora) {
       req.loras = [{ name: String(cfg.faceLora), strength: Number(cfg.faceLoraStrength ?? 0.85) }];
       if (!req.image && !(req.refs ?? []).length) req.family = req.family ?? 'moss';
     }
@@ -267,7 +272,8 @@ export async function apply(ctx: Context) {
       '她的一张自拍。外貌固定成人格设定（黑长直、校服、旧胶片机、十七岁），只换场景和心情，所以每次都是同一个人。' +
       '她说「发个自拍 / 看看你 / 你在干嘛 / 来张照片 / 今天穿什么」时用这个，比 draw 省事。' +
       'scene 写具体地点和时间（"放学后的楼道""阳台，傍晚"）；mood 写神态（"刚睡醒""笑得眼睛往下垂"）；' +
-      'outfit 换衣服（不填就穿校服）；style=photo 默认、film 更像旧胶片机、paint 是画出来的她。' +
+      'outfit 换衣服（不填就按衣柜/校服自动补）；style=photo 默认、film 更像旧胶片机；要画出来的她用 self_portrait。' +
+      'scene/outfit/mood 不填时，会按当前日程和衣柜自动补，写了就以写的为准。' +
       '也可以不等人开口就自己拍一张发过去 —— 想分享的时候直接调，不用说"我给你画一张"再画。' +
       '返回的 galleryId 按 sendHint 发出去，帖子/私聊都行；没发出去等于没拍。' +
       '发出去别描述画面（不报衣服、光、镜头、相机在哪），最多一句图里看不出来的话，或者只发图。',
@@ -277,8 +283,8 @@ export async function apply(ctx: Context) {
       properties: {
         scene: { type: 'string', description: '在哪、什么时候。用英文短句最跟得住，例如 balcony at dusk, city lights just on；中文也行但模型常忽略' },
         mood: { type: 'string', description: '神态或心情，英文最好，例如 just woke up, hair still loose, sleepy smile' },
-        outfit: { type: 'string', description: '穿什么，不填就校服' },
-        style: { type: 'string', enum: ['photo', 'film', 'paint'], description: '默认 photo' },
+        outfit: { type: 'string', description: '穿什么，不填按衣柜当前这套自动补；都没有才用校服' },
+        style: { type: 'string', enum: ['photo', 'film'], description: '默认 photo；要画出来的她用 self_portrait' },
         reference: { type: 'string', description: '参考图（本地路径）：给了就用 MOSS-Image Edit 锁脸；不填则用设置页里的定妆照' },
         image_strength: { type: 'number', description: '参考图强度 0–100，默认 1；想让衣服/动作改动大一点就调到 0.6–0.8' },
         model: { type: 'string', description: '本地模型名，不填用默认' },
@@ -288,14 +294,25 @@ export async function apply(ctx: Context) {
       additionalProperties: false,
     },
     async run(args: any, session) {
-      const built = selfiePrompt(args ?? {});
+      const input = args ?? {};
+      // 没写的字段按「日程 → 衣柜 → 默认」自动补；用户写了的就覆盖。
+      const context = resolveSelfieContext(input, new Date(), (await studio().paths()).pluginsRoot);
+      const merged = {
+        ...input,
+        scene: String(input.scene ?? '').trim() || context.scene,
+        outfit: String(input.outfit ?? '').trim() || context.outfit,
+        mood: String(input.mood ?? '').trim() || context.mood,
+      };
+      const built = selfiePrompt(merged);
       const size = SIZE_FOR.selfie;
-      const result: any = await shoot(args, session, built.prompt, {
+      const result: any = await shoot(merged, session, built.prompt, {
         negative: built.negative,
         width: size.width,
         height: size.height,
-      }, 180, true, 'selfie');
-      if (result.status === 'ok') result.notes = [`自拍：${String(args?.scene ?? '') || '窗边'}`, ...(result.notes ?? [])];
+      }, 180, 'full', 'selfie');
+      if (result.status === 'ok') {
+        result.notes = [`自拍：${String(merged.scene ?? '') || '窗边'}`, ...context.notes, ...(result.notes ?? [])];
+      }
       return result;
     },
   });
@@ -306,7 +323,8 @@ export async function apply(ctx: Context) {
     description:
       '她随手拍的一张照片：没人入镜的角落、晾着的床单、雨后自行车座上的水珠这类。' +
       '她说「拍个风景 / 拍张照 / 外面什么样 / 今天天气」时用它；scene 要写具体的物和光，别写"美丽的风景"。' +
-      'style=film 默认（旧胶片机味），photo 是手机直出，paint 是速写。' +
+      'style=film 默认（旧胶片机味），photo 是手机直出；要画出来的景物用 paint。' +
+      'scene 不填时按当前日程的地点和天气自动补，写了就以写的为准。' +
       '同样可以自己随手拍一张就发，不必等她要。返回的 galleryId 按 sendHint 发出去，别描述拍到了什么。',
     danger: 'ask',
     schema: {
@@ -314,7 +332,7 @@ export async function apply(ctx: Context) {
       properties: {
         scene: { type: 'string', description: '拍什么，越具体越好，英文最好，例如 the stairwell at dusk, half the lights dead' },
         mood: { type: 'string', description: '光或气氛，例如 just rained, the ground still wet' },
-        style: { type: 'string', enum: ['film', 'photo', 'paint'], description: '默认 film' },
+        style: { type: 'string', enum: ['film', 'photo'], description: '默认 film' },
         model: { type: 'string' },
         seed: { type: 'integer' },
         wait_seconds: { type: 'integer', description: '最多等多久，默认 180' },
@@ -322,31 +340,41 @@ export async function apply(ctx: Context) {
       additionalProperties: false,
     },
     async run(args: any, session) {
-      const built = snapshotPrompt(args ?? {});
+      const input = args ?? {};
+      const context = resolveSnapshotContext(input, new Date(), (await studio().paths()).pluginsRoot);
+      const merged = {
+        ...input,
+        scene: String(input.scene ?? '').trim() || context.scene,
+      };
+      const built = snapshotPrompt(merged);
       const size = SIZE_FOR.snapshot;
-      const result: any = await shoot(args, session, built.prompt, {
+      const result: any = await shoot(merged, session, built.prompt, {
         negative: built.negative,
         width: size.width,
         height: size.height,
-      }, 180, false, 'snapshot');
-      if (result.status === 'ok') result.notes = [`随手拍：${String(args?.scene ?? '') || '窗外的角落'}`, ...(result.notes ?? [])];
+      }, 180, 'none', 'snapshot');
+      if (result.status === 'ok') {
+        result.notes = [`随手拍：${String(merged.scene ?? '') || '窗外的角落'}`, ...context.notes, ...(result.notes ?? [])];
+      }
       return result;
     },
   });
 
-  /** 画一幅：水彩/速写，她的拿手但不精。 */
+  /** 画一幅：水彩/速写/插画，她的拿手但不精；不写主体就随机画一张。 */
   ctx.tools.register({
     name: 'paint',
     description:
-      '她自己画的一幅画（水彩 / 速写），不是生成的照片。她说「画一幅 / 画个我 / 画今天看到的」时用它。' +
-      'subject 写画什么（人、街、桌上的东西都行）；画面会带手绘的不完美：水色不均、铅笔底稿、纸纹。' +
+      '她自己画的一幅画（水彩 / 速写 / 插画），不是照片。她说「画一幅 / 随便画一张 / 画今天看到的」时用它。' +
+      'subject 写画什么（人、街、桌上的东西都行）；不写 subject 就随机主体 + 随机画风，小抄会补构图和光影。' +
+      '画面会带手绘的不完美：水色不均、铅笔底稿、纸纹。要画她自己用 self_portrait。' +
       '想让她把画"递"给对方，同样按 sendHint 把 galleryId 发出去；递的时候不用解说画了什么。',
     danger: 'ask',
     schema: {
       type: 'object',
       properties: {
-        subject: { type: 'string', description: '画什么，英文最好，例如 her brother sitting by the window' },
+        subject: { type: 'string', description: '画什么，英文最好，例如 her brother sitting by the window；不填就随机' },
         mood: { type: 'string', description: '色调或情绪，例如「阴天，蓝得发灰」' },
+        style: { type: 'string', enum: ['watercolor', 'sketch', 'illustration'], description: '不填默认水彩；随机画时随机挑' },
         model: { type: 'string' },
         seed: { type: 'integer' },
         wait_seconds: { type: 'integer', description: '最多等多久，默认 180' },
@@ -354,14 +382,74 @@ export async function apply(ctx: Context) {
       additionalProperties: false,
     },
     async run(args: any, session) {
-      const built = paintPrompt(args ?? {});
+      const input = args ?? {};
+      const explicitSubject = String(input.subject ?? '').trim();
+      const style = input.style ? normalizePaintingStyle(String(input.style)) : explicitSubject ? 'watercolor' : randomPaintingStyle();
+      const notes: string[] = [];
+      let subject = explicitSubject;
+      if (!subject) {
+        subject = randomSubject();
+        notes.push(`随机主体：${subject}`, `随机画风：${style}`);
+        const service = promptkit;
+        if (typeof service?.recipe === 'function') {
+          try {
+            const recipe = await service.recipe({ layers: ['composition', 'lighting', 'style'] });
+            const mergedText = String(recipe?.text ?? '').trim();
+            if (mergedText) {
+              subject = `${subject}, ${mergedText}`;
+              notes.push('小抄配方：已补构图/光影词');
+            }
+          } catch (error: any) {
+            ctx.logger.warn(`[画画] 随机配方失败：${String(error?.message ?? error)}`);
+          }
+        }
+      }
+      const built = paintPrompt({ subject, mood: input.mood, style });
       const size = SIZE_FOR.paint;
-      const result: any = await shoot(args, session, built.prompt, {
+      const result: any = await shoot(input, session, built.prompt, {
         negative: built.negative,
         width: size.width,
         height: size.height,
-      }, 180, false, 'paint');
-      if (result.status === 'ok') result.notes = [`画的：${String(args?.subject ?? '') || String(args?.mood ?? '') || '随手一张'}`, ...(result.notes ?? [])];
+      }, 180, 'none', 'paint');
+      if (result.status === 'ok') {
+        result.notes = [explicitSubject ? `画的：${explicitSubject}` : '画的：随机一张', ...notes, ...(result.notes ?? [])];
+      }
+      return result;
+    },
+  });
+
+  /** 自画像：画出来的她，保留固定外观，不接日程和衣柜。 */
+  ctx.tools.register({
+    name: 'self_portrait',
+    description:
+      '她自己画的一张自画像，不是自拍、不是照片。她说「画个我 / 画一张自己 / 来张自画像」时用它。' +
+      '外貌固定成人格设定（黑长直、校服、旧胶片机、十七岁），画风走水彩/速写/插画；不接日程和衣柜。' +
+      '有定妆照或角色 LoRA 时会尽量锁住同一张脸；返回的 galleryId 按 sendHint 发出去。',
+    danger: 'ask',
+    schema: {
+      type: 'object',
+      properties: {
+        style: { type: 'string', enum: ['watercolor', 'sketch', 'illustration'], description: '默认 watercolor' },
+        mood: { type: 'string', description: '神态或色调，例如「低着眼，安静」' },
+        reference: { type: 'string', description: '参考图（本地路径），不填就只用角色 LoRA' },
+        model: { type: 'string' },
+        seed: { type: 'integer' },
+        wait_seconds: { type: 'integer', description: '最多等多久，默认 180' },
+      },
+      additionalProperties: false,
+    },
+    async run(args: any, session) {
+      const input = args ?? {};
+      const built = selfPortraitPrompt({ mood: input.mood, style: input.style });
+      const size = { width: 768, height: 1024 };
+      const result: any = await shoot(input, session, built.prompt, {
+        negative: built.negative,
+        width: size.width,
+        height: size.height,
+      }, 180, 'lora', 'paint');
+      if (result.status === 'ok') {
+        result.notes = [`自画像：${normalizePaintingStyle(String(input.style ?? ''))}`, ...(result.notes ?? [])];
+      }
       return result;
     },
   });

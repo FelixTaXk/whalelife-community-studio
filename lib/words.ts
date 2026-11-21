@@ -409,9 +409,13 @@ export function createWordEngine(options: { file: string; sample?: string; readC
     const enabled = new Set(enabledList(cfg).map((c) => c.id));
     const lang = WORD_LANGS.includes(args?.lang) ? args.lang : cfg.lang;
     // 负面词不进配方：拼出来是正面描述，混进 low quality 之类的词只会互相打架。
-    let layersList = cfg.recipeLayers.filter((id) => enabled.has(id) && id !== 'negative');
-    if (!layersList.length) layersList = DEFAULT_LAYERS.filter((id) => enabled.has(id));
     const data = load();
+    const known = new Set(data.categories.map((c) => c.id));
+    const requested: string[] | null = Array.isArray(args?.layers) ? args.layers.map(String) : null;
+    let layersList: string[] = (requested ?? cfg.recipeLayers).filter((id: string) => known.has(id) && enabled.has(id) && id !== 'negative');
+    if (!layersList.length) {
+      layersList = (requested ?? DEFAULT_LAYERS).filter((id: string) => known.has(id) && enabled.has(id));
+    }
     const words: string[] = [];
     const layersOut: any[] = [];
     for (const cat of layersList) {
