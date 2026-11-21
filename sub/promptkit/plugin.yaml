@@ -1,6 +1,6 @@
 id: promptkit
 name: 提示词小抄
-version: 0.2.5
+version: 0.2.6
 description: 画室的提示词子插件：可选词库（随包示例 + 自己导入）的查词/随机挑词/配方拼句，并向画画子插件提供自动补词服务
 apiVersion: "1.0.0"
 depends: [studio, tools, web]
