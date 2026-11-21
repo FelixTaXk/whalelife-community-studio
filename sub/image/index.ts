@@ -34,6 +34,8 @@ type PromptkitService = {
   enrich?(input: { text: string; kind?: string; signal?: AbortSignal }): Promise<
     { text?: string; added?: Array<{ cat?: string; word?: string }>; skipped?: string } | null
   >;
+  /** 共用负面提示词；空串表示没设置（不覆盖工作流自带的负面）。 */
+  negativePrompt?(): Promise<string>;
 };
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -64,6 +66,18 @@ export async function apply(ctx: Context) {
     } catch (error: any) {
       ctx.logger.warn(`[画画] 提示词小抄补词失败：${String(error?.message ?? error)}`);
       return { text, added: [] as Array<{ cat: string; word: string }> };
+    }
+  };
+
+  /** 共用负面提示词：小抄里设置过才用；没装、没设置、出错都返回空串（不覆盖工作流自带的负面）。 */
+  const sharedNegative = async () => {
+    const service = promptkit;
+    if (typeof service?.negativePrompt !== 'function') return '';
+    try {
+      return String((await service.negativePrompt()) ?? '').trim();
+    } catch (error: any) {
+      ctx.logger.warn(`[画画] 读取共用负面提示词失败：${String(error?.message ?? error)}`);
+      return '';
     }
   };
 
@@ -159,6 +173,11 @@ export async function apply(ctx: Context) {
     const explicit: Record<string, any> = requestOf(args);
     for (const key of Object.keys(explicit)) if (explicit[key] === undefined) delete explicit[key];
     const req: GenRequest = { ...preset, ...explicit, prompt: text };
+    // 共用负面：这次没自己传 negative 才用设置里的那条；传了就以传的为准。
+    if (!String(req.negative ?? '').trim()) {
+      const shared = await sharedNegative();
+      if (shared) req.negative = shared;
+    }
     // 小抄补词：只补画面细节，不改人设、年龄和已写好的外观。
     const enriched = await enrichPrompt(req.prompt, kind, session?.signal);
     const promptNotes: string[] = [];
@@ -449,6 +468,11 @@ export async function apply(ctx: Context) {
         }
         const enriched = await enrichPrompt(req.prompt, 'draw');
         if (enriched.added.length) req.prompt = enriched.text;
+        // 共用负面（每张单独判断：这一张自己传了 negative 就用它的）
+        if (!String(req.negative ?? '').trim()) {
+          const shared = await sharedNegative();
+          if (shared) req.negative = shared;
+        }
         const provider: ProviderContext = {
           backend: picked.backend,
           cfg,

@@ -130,13 +130,26 @@ const libTags = JSON.parse(readFileSync(full ? LIB : SAMPLE, 'utf8')).tags;
 const nsfwEn = libTags.filter((t) => /^nsfw/.test(t.cat)).map((t) => String(t.en ?? '')).filter(Boolean);
 ok('补词：正文里不含成人词条', !nsfwEn.some((w) => w && enriched.text.includes(w)));
 
-// ---------- 5. 负面分类只给 search ----------
+// ---------- 5. 负面词单独管 ----------
 const pickNeg = await engine.pick({ category: 'negative' });
-ok('pick：明确拒绝负面分类', pickNeg.status === 'error' && pickNeg.error.includes('prompt_search'));
+ok('pick：拒绝负面分类并指向「负面提示词」', pickNeg.status === 'error' && pickNeg.error.includes('负面提示词'));
 const recipeNeg = await engine.recipe({});
 ok('recipe：不出现负面分类', recipeNeg.layers.every((l) => l.category !== 'negative'));
 const recipePatch = await call('/plugins/studio/promptkit/config', { recipeLayers: ['negative', 'style'] });
 ok('服务端：剔除配方层里的负面分类', recipePatch.json?.ok === true && !cfg.recipeLayers.includes('negative'), JSON.stringify(cfg.recipeLayers));
+const categoriesAll = await engine.categories();
+ok('分类列表里没有负面分类', !categoriesAll.some((c) => c.id === 'negative'), `${categoriesAll.length} 类`);
+
+// 共用负面提示词
+const negDefault = await engine.negativeLibraryText();
+ok('词库里能取到全部负面词', negDefault.split(',').length > 100 && negDefault.includes('low quality'), `${negDefault.length} 字符`);
+ok('默认没有共用负面', (await engine.negativePrompt()) === '');
+const negSaved = await call('/plugins/studio/promptkit/config', { negativePrompt: '  low quality, blurry  ' });
+ok('共用负面能保存（自动去空格）', negSaved.json?.ok === true && (await engine.negativePrompt()) === 'low quality, blurry');
+const negTooLong = await call('/plugins/studio/promptkit/config', { negativePrompt: 'x'.repeat(4001) });
+ok('共用负面超长会被拒', negTooLong.res.statusCode === 400 && String(negTooLong.json?.error ?? '').includes('4000'));
+await call('/plugins/studio/promptkit/config', { negativePrompt: '' });
+ok('共用负面能清空', (await engine.negativePrompt()) === '');
 
 // ---------- 6. 服务端过滤补词层 ----------
 const layerPatch = await call('/plugins/studio/promptkit/config', { enrichLayers: ['style', 'negative', 'nsfwbody'] });
@@ -148,15 +161,25 @@ let html = await page();
 ok('页面：有 NSFW 开关', html.includes('id="allowNsfw"'));
 ok('页面：关闭态警告隐藏', html.includes('id="nsfwWarn" hidden'));
 ok('页面：关闭态成人分类整行隐藏', (html.match(/hidden><input type="checkbox" name="cat" value="nsfw/g) || []).length === 4);
-ok('页面：关闭态补词提示不提成人分类', !html.includes('负面词和成人分类'));
+ok('页面：关闭态补词提示不提成人分类', !html.includes('成人分类不参与自动补词'));
 ok('页面：不显示“正在用你自己的词库”横幅', !html.includes('正在用你自己的词库'));
-ok('页面：负面分类在配方层禁用', /name="layer" value="negative"[^>]*disabled/.test(html));
+ok('页面：页头不显示 NSFW 数量', !html.includes('NSFW 475 条'));
+ok('页面：三个列表里都没有负面分类', (html.match(/name="(cat|layer|elayer)" value="negative"/g) || []).length === 0);
+ok('页面：有负面提示词输入框', html.includes('id="negativePrompt"') && html.includes('id="negFill"'));
+ok('页面：NSFW 开关藏在折叠面板里', /id="advPanel" hidden/.test(html) && html.includes('id="advToggle"'));
 ok('页面：开启要确认', html.includes('window.confirm'));
+let scriptOk = true;
+try {
+  new Function(html.slice(html.indexOf('<script>') + 8, html.lastIndexOf('</script>')));
+} catch {
+  scriptOk = false;
+}
+ok('页面：内联脚本语法可解析', scriptOk);
 cfg = { ...cfg, allowNsfw: true };
 html = await page();
 ok('页面：开启后显示警告横幅', html.includes('id="nsfwWarn">🔞'));
 ok('页面：开启后成人分类不再隐藏', !/hidden><input type="checkbox" name="cat" value="nsfw/.test(html));
-ok('页面：开启后补词提示提到成人分类', html.includes('负面词和成人分类'));
+ok('页面：开启后补词提示提及成人分类', html.includes('成人分类不参与自动补词'));
 
 // ---------- 8. 工具结果说明用哪份词库 ----------
 const catsResult = await tools.get('prompt_categories').run();

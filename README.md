@@ -45,7 +45,7 @@
 {"categories":[{"id":"lighting","name":"光影"}],"tags":[{"cat":"lighting","zh":"逆光","en":"backlight"}]}
 ```
 
-**哪些功能需要词库**：四个查词工具（`prompt_categories` / `prompt_search` / `prompt_pick` / `prompt_recipe`）和出图前的「自动补词」。画图、拍视频、模型清单、按模型拼工作流都不依赖词库，只是少了一层现成的词。从自己的源数据重建词库用 `node sub/promptkit/scripts/build-data.mjs --full`（全量，含 NSFW）或不带参数的 `node sub/promptkit/scripts/build-data.mjs`（安全子集）；校验格式用 `check-data.mjs`，跑一遍约定自测用 `selftest.mjs`（都不需要宿主）。引擎两种字段名都认（`categories` 与源数据的 `cats`）。负面分类只给 `prompt_search` 用，不进随机挑词和配方。
+**哪些功能需要词库**：四个查词工具（`prompt_categories` / `prompt_search` / `prompt_pick` / `prompt_recipe`）和出图前的「自动补词」。画图、拍视频、模型清单、按模型拼工作流都不依赖词库，只是少了一层现成的词。从自己的源数据重建词库用 `node sub/promptkit/scripts/build-data.mjs --full`（全量，含 NSFW）或不带参数的 `node sub/promptkit/scripts/build-data.mjs`（安全子集）；校验格式用 `check-data.mjs`，跑一遍约定自测用 `selftest.mjs`（都不需要宿主）。引擎两种字段名都认（`categories` 与源数据的 `cats`）。负面词不在分类列表里出现，统一在设置页的「负面提示词」里编辑成**共用负面**：`draw` / `selfie` / `snapshot` / `paint` 调用时没传 `negative` 就用它（传了以传的为准，留空则不覆盖工作流自带的负面）。
 
 ## 本机部署与模型推荐
 
@@ -72,7 +72,7 @@
 | `workflows({kind})` / `models({refresh})` | 列工作流、列本地模型 |
 | `health(name?)` | 不传 name 查 `defaultBackend`：`online=true` 能连、`false` 连不上、`null` 配置了但没法便宜地探（如通义异步接口）；带 `reason` / `version` / `device` |
 | `generate(input, signal?)` | 直接出一张图：参数与 `draw` 一致（prompt / negative / width / height / model / workflow / image / mask / strength…），返回 `GenResult`（`ok` / `files` / `seed` / `notes`） |
-| `promptkit`（小抄子插件提供的服务） | `stats()` / `categories()` / `search()` / `pick()` / `recipe()` / `enrich({text, kind})`：查词、挑词、拼配方、出图前自动补词。停用小抄后绑定失效，`enrich` 自然不再被调用；成人分类是否可见由小抄的 `allowNsfw` 配置决定，`enrich` 始终不用成人分类 |
+| `promptkit`（小抄子插件提供的服务） | `stats()` / `categories()` / `search()` / `pick()` / `recipe()` / `enrich({text, kind})` / `negativePrompt()`：查词、挑词、拼配方、出图前自动补词、取共用负面提示词。停用小抄后绑定失效，`enrich` 自然不再被调用；成人分类是否可见由小抄的 `allowNsfw` 配置决定，`enrich` 始终不用成人分类 |
 
 `generate` 和 `draw` 走同一条后端链路，但不入图库、不发消息、不建任务记录；调用方拿 `files[].path` 自己处理。
 

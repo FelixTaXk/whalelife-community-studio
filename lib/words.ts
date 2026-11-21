@@ -33,6 +33,8 @@ export type WordConfig = {
   enrichCount: number;
   /** 是否允许查词工具使用 NSFW 分类（默认 false）。自动补词不受它影响，始终不用成人分类。 */
   allowNsfw: boolean;
+  /** 共用的负面提示词：出图时没单独传 negative 就用它（空 = 不覆盖工作流自带的负面）。 */
+  negativePrompt: string;
 };
 
 const DEFAULT_LAYERS = ['composition', 'lighting', 'pose', 'expression', 'style'];
@@ -49,6 +51,7 @@ export const WORD_DEFAULT: WordConfig = {
   enrichLayers: DEFAULT_ENRICH_LAYERS.slice(),
   enrichCount: 2,
   allowNsfw: false,
+  negativePrompt: '',
 };
 
 /** style 分类里只取“质量类”词，避免自动补进 anime / watercolor 这类会改画风的词。 */
@@ -138,6 +141,7 @@ export function normalizeWordConfig(stored: any, categories: WordCategory[]): Wo
     : WORD_DEFAULT.enrichLayers.slice();
   const enrichCount = Math.min(5, Math.max(1, Number(stored?.enrichCount) || WORD_DEFAULT.enrichCount));
   const allowNsfw = stored?.allowNsfw === true;
+  const negativePrompt = typeof stored?.negativePrompt === 'string' ? stored.negativePrompt.slice(0, 4000) : '';
   return {
     lang,
     pickCount,
@@ -148,6 +152,7 @@ export function normalizeWordConfig(stored: any, categories: WordCategory[]): Wo
     enrichLayers,
     enrichCount,
     allowNsfw,
+    negativePrompt,
   };
 }
 
@@ -290,14 +295,18 @@ export function createWordEngine(options: { file: string; sample?: string; readC
     return normalizeWordConfig(stored, load().categories);
   };
 
-  /** 工具能用到的分类：配置里没被禁用，且（成人分类）开关是开着的。 */
+  /** 工具能用到的分类：配置里没被禁用、（成人分类）开关开着、且不是「负面」。
+   * 负面词不参与查词/挑词/配方，单独在设置页的「负面提示词」里维护成共用负面。 */
   const enabledList = (cfg: WordConfig) => {
     const off = new Set(cfg.disabledCategories);
-    return load().categories.filter((c) => !off.has(c.id) && (cfg.allowNsfw || !isNsfwCategory(c.id)));
+    return load().categories.filter(
+      (c) => !off.has(c.id) && c.id !== 'negative' && (cfg.allowNsfw || !isNsfwCategory(c.id)),
+    );
   };
 
-  /** 请求某个分类但拿不到时，说清楚是「被设置关了」还是「成人分类开关没开」。 */
+  /** 请求某个分类但拿不到时，说清楚是「被设置关了」「成人分类开关没开」还是「负面词单独管」。 */
   const unavailableReason = (cat: string, cfg: WordConfig) => {
+    if (cat === 'negative') return '负面词不参与查词和挑词：它们统一放在设置页的「负面提示词」里编辑。';
     if (isNsfwCategory(cat) && !cfg.allowNsfw) return '这是成人（NSFW）分类，开关没开；设置页 →「NSFW 分类」里可以打开：' + cat;
     return '这个分类在设置里关掉了：' + cat;
   };
@@ -325,6 +334,21 @@ export function createWordEngine(options: { file: string; sample?: string; readC
     const cfg = await cfgOf();
     const data = load();
     return enabledList(cfg).map((c) => ({ id: c.id, name: c.name, count: (data.byCat.get(c.id) ?? []).length }));
+  };
+
+  /** 词库「负面」分类的全部词，按英文拼成一句：设置页的「填入词库里的全部负面词」用它。 */
+  const negativeLibraryText = async () => {
+    const data = load();
+    return (data.byCat.get('negative') ?? [])
+      .map((tag) => String(tag.en ?? '').trim() || String(tag.zh ?? '').trim())
+      .filter(Boolean)
+      .join(', ');
+  };
+
+  /** 当前生效的共用负面提示词；空字符串表示不覆盖工作流自带的负面。 */
+  const negativePrompt = async () => {
+    const cfg = await cfgOf();
+    return String(cfg.negativePrompt ?? '').trim();
   };
 
   const search = async (args: any) => {
@@ -472,6 +496,11 @@ export function createWordEngine(options: { file: string; sample?: string; readC
       })),
       builtAt: data.builtAt,
       library: await library(),
+      negative: {
+        text: cfg.negativePrompt,
+        defaultText: await negativeLibraryText(),
+        count: (data.byCat.get('negative') ?? []).length,
+      },
     };
   };
 
@@ -538,6 +567,8 @@ export function createWordEngine(options: { file: string; sample?: string; readC
     pick,
     recipe,
     enrich,
+    negativePrompt,
+    negativeLibraryText,
     pageData,
     library,
     importLibrary,
