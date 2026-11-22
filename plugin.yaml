@@ -1,6 +1,6 @@
 id: studio
 name: 画室
-version: 0.2.24
+version: 0.2.25
 description: 画室的生图和拍视频都靠它：可接本机 ComfyUI / SD-WebUI，也能走网络生图接口；画画、拍视频、表情包、提示词小抄和姿势各自独立。
 apiVersion: "1.0.0"
 sub: [image, video, meme, promptkit, pose]
@@ -9,4 +9,5 @@ depends: [tools, web]
 console:
   groupChildren: true
 repository: https://github.com/FelixTaXk/whalelife-community-studio
+
 
