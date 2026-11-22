@@ -1,7 +1,7 @@
 id: meme
 name: 表情包工坊
-version: 0.2.24
-description: 画室的表情包工坊：给图片加字幕、气泡或描边做成表情包；设置页可上传图片、取图库或让画室画一张参考图后一键出图。装了图库时成品通过 offerMedia 交成临时引用（mediaRef，24 小时），收藏入库由 gallery_collect 决定，装 QQ 后可用 QQ 发出去；没装图库则只落本地文件
+version: 0.3.0
+description: 画室的表情包工坊：五种版式（底部白条 / 气泡 / 描边 / 顶部 / 自动）、精确排版、WEBP/GIF 动效；支持一键出图、配文候选、四风格对比、批量套图并打包 ZIP、项目保存与改字重出、模板与语气词库导入导出；装了图库可收藏，装了 QQ 且权限足够可直接发送。全部路径与模型都在设置页配置，不绑定任何本机环境。
 apiVersion: "1.0.0"
 depends: [studio, tools]
 optionalDepends: [gallery]
