@@ -17,16 +17,12 @@ const BACKENDS: Array<[string, string]> = [
 type PageShellOptions = {
   title: string;
   subtitle: string;
-  active: 'image' | 'video';
+  active: 'image' | 'video' | 'promptkit';
   body: string;
   status?: string;
 };
 
 function shell(data: PageShellOptions) {
-  const tabs = [
-    ['image', '画画', '/plugins/studio/image/settings'],
-    ['video', '拍视频', '/plugins/studio/video/settings'],
-  ] as const;
   return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${esc(data.title)} · 画室</title>
 <style>
@@ -40,13 +36,18 @@ nav a.on{color:var(--accent);border-bottom-color:var(--accent);font-weight:600}
 section.card{background:var(--paper);border:1px solid var(--line);border-radius:14px;padding:18px 20px;margin:16px 0}
 h2{font-size:15px;margin:0 0 4px}h3{font-size:13px;margin:14px 0 6px;color:var(--muted);font-weight:600}
 p.hint{margin:4px 0 10px;color:var(--muted);font-size:13px}
-.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px 16px}
-label.f{display:flex;flex-direction:column;gap:5px;font-size:13px}label.f span{color:var(--muted)}label.f i{color:var(--muted);font-size:12px;font-style:normal}
-input,select{font:inherit;padding:8px 11px;border:1px solid var(--line);border-radius:7px;background:var(--paper);color:var(--ink);width:100%}
-input:disabled{opacity:.6}
+.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px 16px;align-items:start}
+.grid .wide{grid-column:1/-1}
+label.f{display:flex;flex-direction:column;gap:5px;font-size:13px;min-width:0}label.f span{color:var(--muted)}label.f i{color:var(--muted);font-size:12px;font-style:normal}
+input,select,textarea{font:inherit;padding:9px 12px;border:1px solid var(--line);border-radius:7px;background:var(--paper);color:var(--ink);width:100%;height:40px;min-width:0;box-sizing:border-box;line-height:1.5;vertical-align:middle}
+textarea{resize:vertical;min-height:62px;height:auto;line-height:1.55}
+select{cursor:pointer}
+input[type=number]{font-variant-numeric:tabular-nums}
+input:disabled{opacity:.6}textarea:disabled{opacity:.6}
 .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:12px}
 button{font:inherit;padding:9px 14px;border:1px solid var(--line);border-radius:7px;background:var(--paper);color:var(--ink);cursor:pointer}
 button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+button.tiny{padding:6px 10px;font-size:12px}
 a.plain{color:var(--accent);text-decoration:none}
 #msg{min-height:22px;margin-top:10px;font-size:13px;color:var(--accent)}#msg.bad{color:#b23c3c}
 .stats{display:flex;gap:10px;flex-wrap:wrap;margin-top:8px}
@@ -56,8 +57,7 @@ a.plain{color:var(--accent);text-decoration:none}
 .chip.ok{color:#0f6b3f;border-color:#b6dcc6;background:#eef8f1}.chip.bad{color:#8a3b2e;border-color:#e4c2bb;background:#fbefed}
 @media(max-width:680px){.grid{grid-template-columns:1fr}body{padding:18px 14px 26px}}
 </style></head><body><main>
-<header><div><h1>${esc(data.title)}</h1><p class="sub">${esc(data.subtitle)}</p></div><a class="plain" href="/plugins/studio/settings">画室总设置</a></header>
-<nav>${tabs.map(([key, label, href]) => `<a href="${href}"${data.active === key ? ' class="on"' : ''}>${label}</a>`).join('')}<a href="/plugins/studio/setup">本机部署</a></nav>
+<header><div><h1>${esc(data.title)}</h1><p class="sub">${esc(data.subtitle)}</p></div></header>
 ${data.status || ''}
 ${data.body}
 <div id="msg"></div>
@@ -107,11 +107,22 @@ export type ImageSettingsInput = {
   workflows: any[];
   models: any;
   health: any;
+  llmModels?: Array<{ id: string; name: string; model: string; provider: string; callable: boolean }>;
 };
+
+function personaArea(id: string, label: string, value: any, hint: string): string {
+  return `<label class="f wide"><span>${esc(label)}<i>${esc(hint)}</i></span><textarea id="${esc(id)}" rows="2">${esc(value)}</textarea></label>`;
+}
+
+function personaList(id: string, label: string, value: any, hint: string): string {
+  return `<label class="f wide"><span>${esc(label)}<i>${esc(hint)}</i></span><textarea id="${esc(id)}" rows="2">${esc(Array.isArray(value) ? value.join('，') : value)}</textarea></label>`;
+}
 
 export function renderImageSettings(data: ImageSettingsInput) {
   const cfg = data.cfg;
   const comfy = cfg.backends.comfy;
+  const persona = cfg.persona || {};
+  const integrations = cfg.integrations || {};
   const modelNames = [...(data.models?.checkpoints ?? []), ...(data.models?.unets ?? [])].map((item: any) => item.name);
   const counts = {
     checkpoints: data.models?.checkpoints?.length ?? 0,
@@ -120,10 +131,14 @@ export function renderImageSettings(data: ImageSettingsInput) {
     clips: data.models?.clips?.length ?? 0,
     loras: data.models?.loras?.length ?? 0,
   };
+  const chatModels = (data.llmModels || []).filter((item) => item.callable);
+  const chatOptions = chatModels.length
+    ? chatModels.map((item) => `<option value="${esc(item.id)}">${esc(item.name)} · ${esc(item.model)}</option>`).join('')
+    : '<option value="">（没有可用的对话模型）</option>';
   const body = `
 <section class="card">
   <h2>出图默认</h2>
-  <p class="hint">这里改的是全局默认后端与 ComfyUI 默认工作流。单次 <code>draw</code> 传了参数就以参数为准。</p>
+  <p class="hint">这里改全局默认后端、ComfyUI 默认工作流与输出目录。单次 <code>draw</code> 传了参数就以参数为准。</p>
   <div class="grid">
     <label class="f"><span>默认后端</span><select id="defaultBackend">${backendOptions(cfg.defaultBackend)}</select><i>体检<code>draw</code>不指定 backend 时走它</i></label>
     <label class="f"><span>当前后端状态</span><div style="padding-top:6px">${healthChip(data.health)}</div><i>${esc(data.health?.reason || '')}</i></label>
@@ -136,8 +151,55 @@ export function renderImageSettings(data: ImageSettingsInput) {
 </section>
 
 <section class="card">
+  <h2>人设与场景</h2>
+  <p class="hint">只影响「自拍 / 自画像 / 随手拍」等有人物的场景。全部留空时用不绑定具体人的通用文案；填了就是你这个角色。</p>
+  <div class="grid" style="margin-bottom:12px">
+    <label class="f wide"><span>想让她是什么样<i>可选。给 AI 一句方向，留空就按现有字段补全</i></span><textarea id="aiBrief" rows="2" placeholder="例如：17 岁中国女高中生，清冷安静，爱画画，常穿校服"></textarea></label>
+    <label class="f"><span>AI 生成模型<i>用本体配置的对话模型</i></span><select id="aiModel">${chatOptions}</select></label>
+    <div class="f"><span>一键生成<i>生成后直接填进下面字段，不会自动保存</i></span><div class="row" style="margin:0"><button type="button" class="primary tiny" id="aiPersonaBtn"${chatModels.length ? '' : ' disabled'}>AI 一键生成人设提示词</button></div></div>
+  </div>
+  <div class="grid">
+    ${personaArea('pAppearance', '外观', persona.appearance, '年龄、性别、身高、发型、脸型等')}
+    ${personaArea('pOutfit', '默认穿搭', persona.defaultOutfit, '衣柜没给结果时用这套')}
+    <label class="f"><span>标志性道具<i>例如画本、吉他；留空就不带</i></span><input id="pProp" value="${esc(persona.prop || '')}"></label>
+    ${personaArea('pSelfieScene', '自拍默认场景', persona.selfieFallbackScene, '日程读不到时用这个')}
+    ${personaArea('pSnapshotScene', '随手拍默认场景', persona.snapshotFallbackScene, '日程读不到时用这个')}
+    ${personaArea('pPainterStyle', '画者说明', persona.painterStyle, '自画像/画画时追加；留空用通用业余画者')}
+    ${personaArea('pPaintSubject', '画画固定主体', persona.paintFallbackSubject, '留空随机挑；填了就一直画这个')}
+    ${personaList('pRandomSubjects', '随机主体池', persona.randomSubjects, '逗号分隔；画画没给主体时随机挑')}
+    ${personaList('pPaintStyles', '随机画风池', persona.paintStyles, '逗号分隔：watercolor / sketch / illustration')}
+  </div>
+  <div class="row"><button class="primary" id="savePersona">保存人设与场景</button><span class="hint">提示词是英文就继续用英文，模型更稳。</span></div>
+</section>
+
+<section class="card">
+  <h2>参考图与锁脸</h2>
+  <p class="hint">自拍、自画像会优先拿这张参考图做编辑；没有参考图时靠角色 LoRA。路径相对插件根目录或绝对路径。</p>
+  <div class="grid">
+    <label class="f"><span>定妆照 / 参考图</span><input id="faceRef" value="${esc(cfg.faceRef || '')}" placeholder="data/face.png"></label>
+    <label class="f"><span>角色 LoRA</span><input id="faceLora" value="${esc(cfg.faceLora || '')}" placeholder="文件名；没填参考图时靠它锁脸"></label>
+    <label class="f"><span>LoRA 强度</span><input id="faceLoraStrength" type="number" step="0.05" min="0" max="1.5" value="${esc(cfg.faceLoraStrength ?? 0.85)}"><i>默认 0.85；脸不像就往上调</i></label>
+  </div>
+  <div class="row"><button class="primary" id="saveFace">保存参考图与锁脸</button></div>
+</section>
+
+<section class="card">
+  <h2>日程与衣柜联动</h2>
+  <p class="hint">默认关闭。开启后，自拍和随手拍会自动把当天日程、穿搭补进提示词；用户自己写的内容优先。路径相对 plugins 根目录或写绝对路径。</p>
+  <div class="grid">
+    <label class="f"><span>读日程</span><select id="scheduleEnabled"><option value="1"${integrations.schedule?.enabled ? ' selected' : ''}>开启</option><option value="0"${integrations.schedule?.enabled ? '' : ' selected'}>关闭</option></select><i>schedule 插件的 days 目录</i></label>
+    <label class="f"><span>日程目录</span><input id="scheduleDir" value="${esc(integrations.schedule?.dataDir || '')}" placeholder="schedule/data/days"></label>
+    <label class="f"><span>读衣柜</span><select id="wardrobeEnabled"><option value="1"${integrations.wardrobe?.enabled ? ' selected' : ''}>开启</option><option value="0"${integrations.wardrobe?.enabled ? '' : ' selected'}>关闭</option></select><i>wardrobe 插件的 data 目录</i></label>
+    <label class="f"><span>衣柜目录</span><input id="wardrobeDir" value="${esc(integrations.wardrobe?.dataDir || '')}" placeholder="schedule/sub/wardrobe/data"></label>
+    <label class="f"><span>衣柜 personaId</span><input id="wardrobePersona" value="${esc(integrations.wardrobe?.personaId || '')}" placeholder="留空取第一个 persona"></label>
+    <label class="f wide"><span>场景细节池<i>逗号分隔；补光、天气、氛围用</i></span><textarea id="sceneDetails" rows="2">${esc(Array.isArray(integrations.sceneDetails) ? integrations.sceneDetails.join('，') : integrations.sceneDetails || '')}</textarea></label>
+  </div>
+  <div class="row"><button class="primary" id="saveIntegrations">保存日程与衣柜</button></div>
+</section>
+
+<section class="card">
   <h2>本机资源</h2>
-  <p class="hint">模型扫的是 <code>${esc(data.models?.modelsDir || data.paths.modelsDir || comfy.modelsDir || '')}</code>，工作流同时扫插件目录和 ComfyUI 画布目录。</p>
+  <p class="hint">模型清单从运行中的 ComfyUI <code>/object_info</code> 网络读取，不扫本地目录；工作流同时扫插件目录和 ComfyUI 画布目录。</p>
   <div class="stats">
     <div class="stat"><span>checkpoint</span><b>${counts.checkpoints}</b></div>
     <div class="stat"><span>unet</span><b>${counts.unets}</b></div>
@@ -152,10 +214,11 @@ export function renderImageSettings(data: ImageSettingsInput) {
     <label class="f"><span>插件工作流目录</span><input value="${esc(data.paths.workflowsDir || '')}" disabled></label>
     <label class="f"><span>Python（看图 / 画蒙版）</span><input id="python" value="${esc(cfg.python || '')}" placeholder="留空自动找 ComfyUI venv"></label>
   </div>
-  <div class="row"><button id="savePath">保存目录与 Python</button><a class="plain" href="/plugins/studio/setup">去体检 / 装 ComfyUI / 推荐模型 →</a></div>
+  <div class="row"><button id="savePath">保存目录与 Python</button></div>
 </section>
 
 <script>
+const splitList = (value) => String(value || '').split(/[,，\\n]/).map((item) => item.trim()).filter(Boolean);
 document.querySelector('#saveImg').onclick = (event) => save({
   defaultBackend: document.querySelector('#defaultBackend').value,
   outputDir: document.querySelector('#outputDir').value,
@@ -165,11 +228,77 @@ document.querySelector('#saveImg').onclick = (event) => save({
     size: document.querySelector('#size').value,
   } },
 }, event.currentTarget);
+document.querySelector('#savePersona').onclick = (event) => save({
+  persona: {
+    appearance: document.querySelector('#pAppearance').value,
+    defaultOutfit: document.querySelector('#pOutfit').value,
+    prop: document.querySelector('#pProp').value,
+    selfieFallbackScene: document.querySelector('#pSelfieScene').value,
+    snapshotFallbackScene: document.querySelector('#pSnapshotScene').value,
+    painterStyle: document.querySelector('#pPainterStyle').value,
+    paintFallbackSubject: document.querySelector('#pPaintSubject').value,
+    randomSubjects: splitList(document.querySelector('#pRandomSubjects').value),
+    paintStyles: splitList(document.querySelector('#pPaintStyles').value),
+  },
+}, event.currentTarget);
+document.querySelector('#saveFace').onclick = (event) => save({
+  faceRef: document.querySelector('#faceRef').value,
+  faceLora: document.querySelector('#faceLora').value,
+  faceLoraStrength: Number(document.querySelector('#faceLoraStrength').value),
+}, event.currentTarget);
+document.querySelector('#saveIntegrations').onclick = (event) => save({
+  integrations: {
+    schedule: { enabled: document.querySelector('#scheduleEnabled').value === '1', dataDir: document.querySelector('#scheduleDir').value },
+    wardrobe: { enabled: document.querySelector('#wardrobeEnabled').value === '1', dataDir: document.querySelector('#wardrobeDir').value, personaId: document.querySelector('#wardrobePersona').value },
+    sceneDetails: splitList(document.querySelector('#sceneDetails').value),
+  },
+}, event.currentTarget);
 document.querySelector('#savePath').onclick = (event) => save({
   python: document.querySelector('#python').value,
 }, event.currentTarget);
+const aiBtn = document.querySelector('#aiPersonaBtn');
+if (aiBtn) aiBtn.onclick = async () => {
+  const msg = document.querySelector('#msg');
+  aiBtn.disabled = true;
+  msg.className = '';
+  msg.textContent = 'AI 正在生成人设提示词…';
+  try {
+    const res = await fetch(location.pathname + '/ai-persona', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: document.querySelector('#aiModel').value,
+        brief: document.querySelector('#aiBrief').value,
+        persona: {
+          appearance: document.querySelector('#pAppearance').value,
+          defaultOutfit: document.querySelector('#pOutfit').value,
+          prop: document.querySelector('#pProp').value,
+          selfieFallbackScene: document.querySelector('#pSelfieScene').value,
+          snapshotFallbackScene: document.querySelector('#pSnapshotScene').value,
+          painterStyle: document.querySelector('#pPainterStyle').value,
+          paintFallbackSubject: document.querySelector('#pPaintSubject').value,
+          randomSubjects: splitList(document.querySelector('#pRandomSubjects').value),
+          paintStyles: splitList(document.querySelector('#pPaintStyles').value),
+        },
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.ok) throw new Error(data.error || ('HTTP ' + res.status));
+    const p = data.persona || {};
+    const put = (id, value) => { if (value !== undefined && value !== null) document.querySelector(id).value = Array.isArray(value) ? value.join('，') : value; };
+    put('#pAppearance', p.appearance); put('#pOutfit', p.defaultOutfit); put('#pProp', p.prop);
+    put('#pSelfieScene', p.selfieFallbackScene); put('#pSnapshotScene', p.snapshotFallbackScene);
+    put('#pPainterStyle', p.painterStyle); put('#pPaintSubject', p.paintFallbackSubject);
+    put('#pRandomSubjects', p.randomSubjects); put('#pPaintStyles', p.paintStyles);
+    msg.textContent = '生成完成，检查一下再点「保存人设与场景」';
+  } catch (error) {
+    msg.className = 'bad';
+    msg.textContent = '生成失败：' + error.message;
+  } finally {
+    aiBtn.disabled = false;
+  }
+};
 </script>`;
-  return shell({ title: '画画设置', subtitle: '默认工作流、尺寸与模型；出图前还可以让小抄自动补词', active: 'image', body, status: '' });
+  return shell({ title: '画画设置', subtitle: '出图默认、人设、参考图、日程衣柜与本机资源', active: 'image', body, status: '' });
 }
 
 export type VideoSettingsInput = {

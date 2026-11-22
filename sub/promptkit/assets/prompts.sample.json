@@ -1,171 +1,756 @@
 {
   "version": 1,
   "license": "CC0-1.0",
-  "source": "画室随包示例词库（自撰通用词，可自由再分发）",
-  "builtAt": "2026-11-21T00:00:00.000Z",
+  "source": "promptkit 随包示例词库（自撰通用词，CC0-1.0）",
+  "builtAt": "2026-11-21T00:00:00Z",
   "categories": [
-    { "id": "composition", "name": "构图" },
-    { "id": "lighting", "name": "光影" },
-    { "id": "pose", "name": "姿势" },
-    { "id": "expression", "name": "表情" },
-    { "id": "outfit", "name": "服装" },
-    { "id": "scene", "name": "场景" },
-    { "id": "prop", "name": "道具" },
-    { "id": "camera", "name": "镜头" },
-    { "id": "mood", "name": "氛围" },
-    { "id": "style", "name": "风格与质量" },
-    { "id": "negative", "name": "负面" }
+    {
+      "id": "composition",
+      "name": "构图"
+    },
+    {
+      "id": "lighting",
+      "name": "光影"
+    },
+    {
+      "id": "pose",
+      "name": "姿势"
+    },
+    {
+      "id": "expression",
+      "name": "表情"
+    },
+    {
+      "id": "outfit",
+      "name": "服装"
+    },
+    {
+      "id": "scene",
+      "name": "场景"
+    },
+    {
+      "id": "prop",
+      "name": "道具"
+    },
+    {
+      "id": "camera",
+      "name": "镜头"
+    },
+    {
+      "id": "mood",
+      "name": "氛围"
+    },
+    {
+      "id": "style",
+      "name": "风格与质量",
+      "role": "quality"
+    },
+    {
+      "id": "negative",
+      "name": "负面",
+      "role": "negative"
+    }
   ],
   "tags": [
-    { "cat": "composition", "zh": "三分法", "en": "rule of thirds" },
-    { "cat": "composition", "zh": "中心构图", "en": "centered composition" },
-    { "cat": "composition", "zh": "对角线构图", "en": "diagonal composition" },
-    { "cat": "composition", "zh": "对称构图", "en": "symmetrical composition" },
-    { "cat": "composition", "zh": "留白", "en": "negative space" },
-    { "cat": "composition", "zh": "前景遮挡", "en": "foreground framing" },
-    { "cat": "composition", "zh": "低角度", "en": "low angle" },
-    { "cat": "composition", "zh": "俯视", "en": "high angle" },
-    { "cat": "composition", "zh": "特写", "en": "close-up framing" },
-    { "cat": "composition", "zh": "半身", "en": "half body shot" },
-    { "cat": "composition", "zh": "全身", "en": "full body shot" },
-    { "cat": "composition", "zh": "广角", "en": "wide angle" },
-
-    { "cat": "lighting", "zh": "逆光", "en": "backlight" },
-    { "cat": "lighting", "zh": "侧光", "en": "side light" },
-    { "cat": "lighting", "zh": "顺光", "en": "front light" },
-    { "cat": "lighting", "zh": "柔和自然光", "en": "soft natural light" },
-    { "cat": "lighting", "zh": "黄昏暖光", "en": "warm dusk light" },
-    { "cat": "lighting", "zh": "冷光", "en": "cool light" },
-    { "cat": "lighting", "zh": "窗光", "en": "window light" },
-    { "cat": "lighting", "zh": "霓虹灯", "en": "neon light" },
-    { "cat": "lighting", "zh": "轮廓光", "en": "rim light" },
-    { "cat": "lighting", "zh": "阴天散射光", "en": "overcast light" },
-    { "cat": "lighting", "zh": "烛光", "en": "candlelight" },
-    { "cat": "lighting", "zh": "月光", "en": "moonlight" },
-    { "cat": "lighting", "zh": "硬光", "en": "hard light" },
-    { "cat": "lighting", "zh": "灯光下的影子", "en": "dramatic shadow" },
-
-    { "cat": "pose", "zh": "站立", "en": "standing" },
-    { "cat": "pose", "zh": "回头看", "en": "looking back over shoulder" },
-    { "cat": "pose", "zh": "手插兜", "en": "hands in pockets" },
-    { "cat": "pose", "zh": "抱臂", "en": "arms crossed" },
-    { "cat": "pose", "zh": "撑伞", "en": "holding umbrella" },
-    { "cat": "pose", "zh": "坐姿", "en": "sitting" },
-    { "cat": "pose", "zh": "靠着墙", "en": "leaning against wall" },
-    { "cat": "pose", "zh": "手托下巴", "en": "chin resting on hand" },
-    { "cat": "pose", "zh": "整理头发", "en": "adjusting hair" },
-    { "cat": "pose", "zh": "走路", "en": "walking" },
-    { "cat": "pose", "zh": "举手打招呼", "en": "waving hand" },
-    { "cat": "pose", "zh": "微微侧身", "en": "slightly turning body" },
-
-    { "cat": "expression", "zh": "微笑", "en": "gentle smile" },
-    { "cat": "expression", "zh": "大笑", "en": "laughing" },
-    { "cat": "expression", "zh": "浅笑", "en": "slight smile" },
-    { "cat": "expression", "zh": "认真", "en": "serious expression" },
-    { "cat": "expression", "zh": "发呆", "en": "spacing out" },
-    { "cat": "expression", "zh": "惊讶", "en": "surprised" },
-    { "cat": "expression", "zh": "皱眉", "en": "slight frown" },
-    { "cat": "expression", "zh": "闭眼", "en": "eyes closed" },
-    { "cat": "expression", "zh": "侧脸", "en": "profile view" },
-    { "cat": "expression", "zh": "看向别处", "en": "looking away" },
-    { "cat": "expression", "zh": "平静", "en": "calm expression" },
-    { "cat": "expression", "zh": "有点困", "en": "sleepy look" },
-
-    { "cat": "outfit", "zh": "白衬衫", "en": "white shirt" },
-    { "cat": "outfit", "zh": "校服", "en": "school uniform" },
-    { "cat": "outfit", "zh": "针织开衫", "en": "knit cardigan" },
-    { "cat": "outfit", "zh": "牛仔外套", "en": "denim jacket" },
-    { "cat": "outfit", "zh": "长风衣", "en": "long trench coat" },
-    { "cat": "outfit", "zh": "卫衣", "en": "hoodie" },
-    { "cat": "outfit", "zh": "连衣裙", "en": "dress" },
-    { "cat": "outfit", "zh": "休闲西装", "en": "casual blazer" },
-    { "cat": "outfit", "zh": "围巾", "en": "scarf" },
-    { "cat": "outfit", "zh": "毛线帽", "en": "beanie" },
-    { "cat": "outfit", "zh": "帆布鞋", "en": "canvas sneakers" },
-    { "cat": "outfit", "zh": "背包", "en": "backpack" },
-
-    { "cat": "scene", "zh": "教室", "en": "classroom" },
-    { "cat": "scene", "zh": "走廊", "en": "hallway" },
-    { "cat": "scene", "zh": "天台", "en": "rooftop" },
-    { "cat": "scene", "zh": "便利店", "en": "convenience store" },
-    { "cat": "scene", "zh": "公交站", "en": "bus stop" },
-    { "cat": "scene", "zh": "雨夜街道", "en": "rainy street at night" },
-    { "cat": "scene", "zh": "海边", "en": "seaside" },
-    { "cat": "scene", "zh": "图书馆", "en": "library" },
-    { "cat": "scene", "zh": "咖啡馆", "en": "cafe" },
-    { "cat": "scene", "zh": "樱花树下", "en": "under cherry blossoms" },
-    { "cat": "scene", "zh": "山间小路", "en": "mountain trail" },
-    { "cat": "scene", "zh": "老城区街道", "en": "old town street" },
-    { "cat": "scene", "zh": "地铁站", "en": "subway station" },
-    { "cat": "scene", "zh": "阳台", "en": "balcony" },
-
-    { "cat": "prop", "zh": "胶片相机", "en": "film camera" },
-    { "cat": "prop", "zh": "透明雨伞", "en": "clear umbrella" },
-    { "cat": "prop", "zh": "咖啡杯", "en": "coffee cup" },
-    { "cat": "prop", "zh": "耳机", "en": "headphones" },
-    { "cat": "prop", "zh": "书", "en": "open book" },
-    { "cat": "prop", "zh": "自行车", "en": "bicycle" },
-    { "cat": "prop", "zh": "手提袋", "en": "tote bag" },
-    { "cat": "prop", "zh": "笔记本", "en": "notebook" },
-    { "cat": "prop", "zh": "气球", "en": "balloons" },
-    { "cat": "prop", "zh": "纸飞机", "en": "paper plane" },
-    { "cat": "prop", "zh": "便当盒", "en": "lunch box" },
-
-    { "cat": "camera", "zh": "35mm 镜头", "en": "35mm lens" },
-    { "cat": "camera", "zh": "85mm 人像镜头", "en": "85mm portrait lens" },
-    { "cat": "camera", "zh": "浅景深", "en": "shallow depth of field" },
-    { "cat": "camera", "zh": "胶片颗粒", "en": "film grain" },
-    { "cat": "camera", "zh": "长曝光", "en": "long exposure" },
-    { "cat": "camera", "zh": "手持拍摄", "en": "handheld shot" },
-    { "cat": "camera", "zh": "仰拍", "en": "low-angle shot" },
-    { "cat": "camera", "zh": "第一人称视角", "en": "first person view" },
-    { "cat": "camera", "zh": "微距", "en": "macro shot" },
-    { "cat": "camera", "zh": "虚化背景", "en": "bokeh background" },
-
-    { "cat": "mood", "zh": "安静", "en": "quiet" },
-    { "cat": "mood", "zh": "温柔", "en": "gentle" },
-    { "cat": "mood", "zh": "治愈", "en": "healing atmosphere" },
-    { "cat": "mood", "zh": "怀旧", "en": "nostalgic" },
-    { "cat": "mood", "zh": "清冷", "en": "cool and calm" },
-    { "cat": "mood", "zh": "慵懒", "en": "lazy afternoon" },
-    { "cat": "mood", "zh": "元气", "en": "energetic" },
-    { "cat": "mood", "zh": "忧郁", "en": "melancholic" },
-    { "cat": "mood", "zh": "浪漫", "en": "romantic" },
-    { "cat": "mood", "zh": "神秘", "en": "mysterious" },
-    { "cat": "mood", "zh": "日常感", "en": "slice of life" },
-
-    { "cat": "style", "zh": "电影感", "en": "cinematic" },
-    { "cat": "style", "zh": "日系清新", "en": "Japanese fresh style" },
-    { "cat": "style", "zh": "写实摄影", "en": "photorealistic" },
-    { "cat": "style", "zh": "水彩", "en": "watercolor" },
-    { "cat": "style", "zh": "油画", "en": "oil painting" },
-    { "cat": "style", "zh": "胶片质感", "en": "film look" },
-    { "cat": "style", "zh": "极简", "en": "minimalist" },
-    { "cat": "style", "zh": "复古", "en": "retro" },
-    { "cat": "style", "zh": "赛博朋克", "en": "cyberpunk" },
-    { "cat": "style", "zh": "国风", "en": "Chinese style illustration" },
-    { "cat": "style", "zh": "二次元", "en": "anime style" },
-    { "cat": "style", "zh": "素描", "en": "pencil sketch" },
-    { "cat": "style", "zh": "杰作", "en": "masterpiece" },
-    { "cat": "style", "zh": "最佳质量", "en": "best quality" },
-    { "cat": "style", "zh": "高分辨率", "en": "highres" },
-    { "cat": "style", "zh": "超高分辨率", "en": "absurdres" },
-    { "cat": "style", "zh": "非常有美感", "en": "very aesthetic" },
-    { "cat": "style", "zh": "最新", "en": "newest" },
-    { "cat": "style", "zh": "4K", "en": "4k" },
-    { "cat": "style", "zh": "8K", "en": "8k" },
-    { "cat": "style", "zh": "细节丰富", "en": "detailed" },
-    { "cat": "style", "zh": "精细细节", "en": "intricate details" },
-
-    { "cat": "negative", "zh": "低质量", "en": "low quality" },
-    { "cat": "negative", "zh": "模糊", "en": "blurry" },
-    { "cat": "negative", "zh": "变形", "en": "deformed" },
-    { "cat": "negative", "zh": "多余手指", "en": "extra fingers" },
-    { "cat": "negative", "zh": "水印", "en": "watermark" },
-    { "cat": "negative", "zh": "文字乱码", "en": "garbled text" },
-    { "cat": "negative", "zh": "过曝", "en": "overexposed" },
-    { "cat": "negative", "zh": "欠曝", "en": "underexposed" },
-    { "cat": "negative", "zh": "噪点", "en": "noise" },
-    { "cat": "negative", "zh": "画面畸变", "en": "distortion" }
+    {
+      "cat": "composition",
+      "zh": "三分法",
+      "en": "rule of thirds"
+    },
+    {
+      "cat": "composition",
+      "zh": "中心构图",
+      "en": "centered composition"
+    },
+    {
+      "cat": "composition",
+      "zh": "对角线构图",
+      "en": "diagonal composition"
+    },
+    {
+      "cat": "composition",
+      "zh": "对称构图",
+      "en": "symmetrical composition"
+    },
+    {
+      "cat": "composition",
+      "zh": "留白",
+      "en": "negative space"
+    },
+    {
+      "cat": "composition",
+      "zh": "前景遮挡",
+      "en": "foreground framing"
+    },
+    {
+      "cat": "composition",
+      "zh": "低角度",
+      "en": "low angle"
+    },
+    {
+      "cat": "composition",
+      "zh": "俯视",
+      "en": "high angle"
+    },
+    {
+      "cat": "composition",
+      "zh": "特写",
+      "en": "close-up framing"
+    },
+    {
+      "cat": "composition",
+      "zh": "半身",
+      "en": "half body shot"
+    },
+    {
+      "cat": "composition",
+      "zh": "全身",
+      "en": "full body shot"
+    },
+    {
+      "cat": "composition",
+      "zh": "广角",
+      "en": "wide angle"
+    },
+    {
+      "cat": "lighting",
+      "zh": "逆光",
+      "en": "backlight"
+    },
+    {
+      "cat": "lighting",
+      "zh": "侧光",
+      "en": "side light"
+    },
+    {
+      "cat": "lighting",
+      "zh": "顺光",
+      "en": "front light"
+    },
+    {
+      "cat": "lighting",
+      "zh": "柔和自然光",
+      "en": "soft natural light"
+    },
+    {
+      "cat": "lighting",
+      "zh": "黄昏暖光",
+      "en": "warm dusk light"
+    },
+    {
+      "cat": "lighting",
+      "zh": "冷光",
+      "en": "cool light"
+    },
+    {
+      "cat": "lighting",
+      "zh": "窗光",
+      "en": "window light"
+    },
+    {
+      "cat": "lighting",
+      "zh": "霓虹灯",
+      "en": "neon light"
+    },
+    {
+      "cat": "lighting",
+      "zh": "轮廓光",
+      "en": "rim light"
+    },
+    {
+      "cat": "lighting",
+      "zh": "阴天散射光",
+      "en": "overcast light"
+    },
+    {
+      "cat": "lighting",
+      "zh": "烛光",
+      "en": "candlelight"
+    },
+    {
+      "cat": "lighting",
+      "zh": "月光",
+      "en": "moonlight"
+    },
+    {
+      "cat": "lighting",
+      "zh": "硬光",
+      "en": "hard light"
+    },
+    {
+      "cat": "lighting",
+      "zh": "灯光下的影子",
+      "en": "dramatic shadow"
+    },
+    {
+      "cat": "pose",
+      "zh": "站立",
+      "en": "standing"
+    },
+    {
+      "cat": "pose",
+      "zh": "回头看",
+      "en": "looking back over shoulder"
+    },
+    {
+      "cat": "pose",
+      "zh": "手插兜",
+      "en": "hands in pockets"
+    },
+    {
+      "cat": "pose",
+      "zh": "抱臂",
+      "en": "arms crossed"
+    },
+    {
+      "cat": "pose",
+      "zh": "撑伞",
+      "en": "holding umbrella"
+    },
+    {
+      "cat": "pose",
+      "zh": "坐姿",
+      "en": "sitting"
+    },
+    {
+      "cat": "pose",
+      "zh": "靠着墙",
+      "en": "leaning against wall"
+    },
+    {
+      "cat": "pose",
+      "zh": "手托下巴",
+      "en": "chin resting on hand"
+    },
+    {
+      "cat": "pose",
+      "zh": "整理头发",
+      "en": "adjusting hair"
+    },
+    {
+      "cat": "pose",
+      "zh": "走路",
+      "en": "walking"
+    },
+    {
+      "cat": "pose",
+      "zh": "举手打招呼",
+      "en": "waving hand"
+    },
+    {
+      "cat": "pose",
+      "zh": "微微侧身",
+      "en": "slightly turning body"
+    },
+    {
+      "cat": "expression",
+      "zh": "微笑",
+      "en": "gentle smile"
+    },
+    {
+      "cat": "expression",
+      "zh": "大笑",
+      "en": "laughing"
+    },
+    {
+      "cat": "expression",
+      "zh": "浅笑",
+      "en": "slight smile"
+    },
+    {
+      "cat": "expression",
+      "zh": "认真",
+      "en": "serious expression"
+    },
+    {
+      "cat": "expression",
+      "zh": "发呆",
+      "en": "spacing out"
+    },
+    {
+      "cat": "expression",
+      "zh": "惊讶",
+      "en": "surprised"
+    },
+    {
+      "cat": "expression",
+      "zh": "皱眉",
+      "en": "slight frown"
+    },
+    {
+      "cat": "expression",
+      "zh": "闭眼",
+      "en": "eyes closed"
+    },
+    {
+      "cat": "expression",
+      "zh": "侧脸",
+      "en": "profile view"
+    },
+    {
+      "cat": "expression",
+      "zh": "看向别处",
+      "en": "looking away"
+    },
+    {
+      "cat": "expression",
+      "zh": "平静",
+      "en": "calm expression"
+    },
+    {
+      "cat": "expression",
+      "zh": "有点困",
+      "en": "sleepy look"
+    },
+    {
+      "cat": "outfit",
+      "zh": "白衬衫",
+      "en": "white shirt"
+    },
+    {
+      "cat": "outfit",
+      "zh": "校服",
+      "en": "school uniform"
+    },
+    {
+      "cat": "outfit",
+      "zh": "针织开衫",
+      "en": "knit cardigan"
+    },
+    {
+      "cat": "outfit",
+      "zh": "牛仔外套",
+      "en": "denim jacket"
+    },
+    {
+      "cat": "outfit",
+      "zh": "长风衣",
+      "en": "long trench coat"
+    },
+    {
+      "cat": "outfit",
+      "zh": "卫衣",
+      "en": "hoodie"
+    },
+    {
+      "cat": "outfit",
+      "zh": "连衣裙",
+      "en": "dress"
+    },
+    {
+      "cat": "outfit",
+      "zh": "休闲西装",
+      "en": "casual blazer"
+    },
+    {
+      "cat": "outfit",
+      "zh": "围巾",
+      "en": "scarf"
+    },
+    {
+      "cat": "outfit",
+      "zh": "毛线帽",
+      "en": "beanie"
+    },
+    {
+      "cat": "outfit",
+      "zh": "帆布鞋",
+      "en": "canvas sneakers"
+    },
+    {
+      "cat": "outfit",
+      "zh": "背包",
+      "en": "backpack"
+    },
+    {
+      "cat": "scene",
+      "zh": "教室",
+      "en": "classroom"
+    },
+    {
+      "cat": "scene",
+      "zh": "走廊",
+      "en": "hallway"
+    },
+    {
+      "cat": "scene",
+      "zh": "天台",
+      "en": "rooftop"
+    },
+    {
+      "cat": "scene",
+      "zh": "便利店",
+      "en": "convenience store"
+    },
+    {
+      "cat": "scene",
+      "zh": "公交站",
+      "en": "bus stop"
+    },
+    {
+      "cat": "scene",
+      "zh": "雨夜街道",
+      "en": "rainy street at night"
+    },
+    {
+      "cat": "scene",
+      "zh": "海边",
+      "en": "seaside"
+    },
+    {
+      "cat": "scene",
+      "zh": "图书馆",
+      "en": "library"
+    },
+    {
+      "cat": "scene",
+      "zh": "咖啡馆",
+      "en": "cafe"
+    },
+    {
+      "cat": "scene",
+      "zh": "樱花树下",
+      "en": "under cherry blossoms"
+    },
+    {
+      "cat": "scene",
+      "zh": "山间小路",
+      "en": "mountain trail"
+    },
+    {
+      "cat": "scene",
+      "zh": "老城区街道",
+      "en": "old town street"
+    },
+    {
+      "cat": "scene",
+      "zh": "地铁站",
+      "en": "subway station"
+    },
+    {
+      "cat": "scene",
+      "zh": "阳台",
+      "en": "balcony"
+    },
+    {
+      "cat": "prop",
+      "zh": "胶片相机",
+      "en": "film camera"
+    },
+    {
+      "cat": "prop",
+      "zh": "透明雨伞",
+      "en": "clear umbrella"
+    },
+    {
+      "cat": "prop",
+      "zh": "咖啡杯",
+      "en": "coffee cup"
+    },
+    {
+      "cat": "prop",
+      "zh": "耳机",
+      "en": "headphones"
+    },
+    {
+      "cat": "prop",
+      "zh": "书",
+      "en": "open book"
+    },
+    {
+      "cat": "prop",
+      "zh": "自行车",
+      "en": "bicycle"
+    },
+    {
+      "cat": "prop",
+      "zh": "手提袋",
+      "en": "tote bag"
+    },
+    {
+      "cat": "prop",
+      "zh": "笔记本",
+      "en": "notebook"
+    },
+    {
+      "cat": "prop",
+      "zh": "气球",
+      "en": "balloons"
+    },
+    {
+      "cat": "prop",
+      "zh": "纸飞机",
+      "en": "paper plane"
+    },
+    {
+      "cat": "prop",
+      "zh": "便当盒",
+      "en": "lunch box"
+    },
+    {
+      "cat": "camera",
+      "zh": "35mm 镜头",
+      "en": "35mm lens"
+    },
+    {
+      "cat": "camera",
+      "zh": "85mm 人像镜头",
+      "en": "85mm portrait lens"
+    },
+    {
+      "cat": "camera",
+      "zh": "浅景深",
+      "en": "shallow depth of field"
+    },
+    {
+      "cat": "camera",
+      "zh": "胶片颗粒",
+      "en": "film grain"
+    },
+    {
+      "cat": "camera",
+      "zh": "长曝光",
+      "en": "long exposure"
+    },
+    {
+      "cat": "camera",
+      "zh": "手持拍摄",
+      "en": "handheld shot"
+    },
+    {
+      "cat": "camera",
+      "zh": "仰拍",
+      "en": "low-angle shot"
+    },
+    {
+      "cat": "camera",
+      "zh": "第一人称视角",
+      "en": "first person view"
+    },
+    {
+      "cat": "camera",
+      "zh": "微距",
+      "en": "macro shot"
+    },
+    {
+      "cat": "camera",
+      "zh": "虚化背景",
+      "en": "bokeh background"
+    },
+    {
+      "cat": "mood",
+      "zh": "安静",
+      "en": "quiet"
+    },
+    {
+      "cat": "mood",
+      "zh": "温柔",
+      "en": "gentle"
+    },
+    {
+      "cat": "mood",
+      "zh": "治愈",
+      "en": "healing atmosphere"
+    },
+    {
+      "cat": "mood",
+      "zh": "怀旧",
+      "en": "nostalgic"
+    },
+    {
+      "cat": "mood",
+      "zh": "清冷",
+      "en": "cool and calm"
+    },
+    {
+      "cat": "mood",
+      "zh": "慵懒",
+      "en": "lazy afternoon"
+    },
+    {
+      "cat": "mood",
+      "zh": "元气",
+      "en": "energetic"
+    },
+    {
+      "cat": "mood",
+      "zh": "忧郁",
+      "en": "melancholic"
+    },
+    {
+      "cat": "mood",
+      "zh": "浪漫",
+      "en": "romantic"
+    },
+    {
+      "cat": "mood",
+      "zh": "神秘",
+      "en": "mysterious"
+    },
+    {
+      "cat": "mood",
+      "zh": "日常感",
+      "en": "slice of life"
+    },
+    {
+      "cat": "style",
+      "zh": "电影感",
+      "en": "cinematic"
+    },
+    {
+      "cat": "style",
+      "zh": "日系清新",
+      "en": "Japanese fresh style"
+    },
+    {
+      "cat": "style",
+      "zh": "写实摄影",
+      "en": "photorealistic"
+    },
+    {
+      "cat": "style",
+      "zh": "水彩",
+      "en": "watercolor"
+    },
+    {
+      "cat": "style",
+      "zh": "油画",
+      "en": "oil painting"
+    },
+    {
+      "cat": "style",
+      "zh": "胶片质感",
+      "en": "film look"
+    },
+    {
+      "cat": "style",
+      "zh": "极简",
+      "en": "minimalist"
+    },
+    {
+      "cat": "style",
+      "zh": "复古",
+      "en": "retro"
+    },
+    {
+      "cat": "style",
+      "zh": "赛博朋克",
+      "en": "cyberpunk"
+    },
+    {
+      "cat": "style",
+      "zh": "国风",
+      "en": "Chinese style illustration"
+    },
+    {
+      "cat": "style",
+      "zh": "二次元",
+      "en": "anime style"
+    },
+    {
+      "cat": "style",
+      "zh": "素描",
+      "en": "pencil sketch"
+    },
+    {
+      "cat": "style",
+      "zh": "杰作",
+      "en": "masterpiece"
+    },
+    {
+      "cat": "style",
+      "zh": "最佳质量",
+      "en": "best quality"
+    },
+    {
+      "cat": "style",
+      "zh": "高分辨率",
+      "en": "highres"
+    },
+    {
+      "cat": "style",
+      "zh": "超高分辨率",
+      "en": "absurdres"
+    },
+    {
+      "cat": "style",
+      "zh": "非常有美感",
+      "en": "very aesthetic"
+    },
+    {
+      "cat": "style",
+      "zh": "最新",
+      "en": "newest"
+    },
+    {
+      "cat": "style",
+      "zh": "4K",
+      "en": "4k"
+    },
+    {
+      "cat": "style",
+      "zh": "8K",
+      "en": "8k"
+    },
+    {
+      "cat": "style",
+      "zh": "细节丰富",
+      "en": "detailed"
+    },
+    {
+      "cat": "style",
+      "zh": "精细细节",
+      "en": "intricate details"
+    },
+    {
+      "cat": "negative",
+      "zh": "低质量",
+      "en": "low quality"
+    },
+    {
+      "cat": "negative",
+      "zh": "模糊",
+      "en": "blurry"
+    },
+    {
+      "cat": "negative",
+      "zh": "变形",
+      "en": "deformed"
+    },
+    {
+      "cat": "negative",
+      "zh": "多余手指",
+      "en": "extra fingers"
+    },
+    {
+      "cat": "negative",
+      "zh": "水印",
+      "en": "watermark"
+    },
+    {
+      "cat": "negative",
+      "zh": "文字乱码",
+      "en": "garbled text"
+    },
+    {
+      "cat": "negative",
+      "zh": "过曝",
+      "en": "overexposed"
+    },
+    {
+      "cat": "negative",
+      "zh": "欠曝",
+      "en": "underexposed"
+    },
+    {
+      "cat": "negative",
+      "zh": "噪点",
+      "en": "noise"
+    },
+    {
+      "cat": "negative",
+      "zh": "画面畸变",
+      "en": "distortion"
+    }
   ]
 }

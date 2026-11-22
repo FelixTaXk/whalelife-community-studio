@@ -19,8 +19,10 @@ import { backendName, health, listWorkflows, loadWorkflow, runBackend } from './
 import { requestOf } from './lib/request.ts';
 import type { GenResult } from './lib/types.ts';
 import { renderSettings } from './lib/ui.ts';
-import { deploy, deployBusy, probe, readDeployState, recommend, startComfy } from './lib/setup.ts';
+import { deploy, deployBusy, deploySd, probe, readDeployState, recommend, startComfy, startSd } from './lib/setup.ts';
+import { detectLocalTools, localInstallRoot } from './lib/local-tools.ts';
 import { renderSetup } from './lib/setup-ui.ts';
+import { createWordEngine } from './lib/words.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const BASE = '/plugins/studio/';
@@ -194,9 +196,28 @@ export function apply(ctx: Context) {
   };
   ctx.provide('studio', service);
 
-  // 提示词小抄的词库引擎现在由 sub/promptkit 自己注册（ctx.provide('promptkit') 在小抄里）。
-  // 这样停用小抄子插件时，画画的 optional('promptkit') 会跟着解绑，自动补词真正停下；
-  // 补词配置也回到小抄自己的 ctx.config，父级不再读子插件的私有 data 文件。
+  // 提示词小抄是画室的子插件；词库引擎常驻父级，画画子插件和「提示词小抄」
+  // 子插件的设置页共用同一份服务。词库、配置归子插件 data，父级只读不写。
+  const promptkitDir = join(HERE, 'sub', 'promptkit');
+  const promptkitData = join(promptkitDir, 'data');
+  const promptkitFile = join(promptkitData, 'prompts.json');
+  const promptkitSample = join(promptkitDir, 'assets', 'prompts.sample.json');
+  const promptkitSampleLegacy = join(promptkitData, 'prompts.sample.json');
+  const promptkitConfig = join(promptkitData, 'config.json');
+  ctx.provide(
+    'promptkit',
+    createWordEngine({
+      file: promptkitFile,
+      sample: existsSync(promptkitSample) ? promptkitSample : existsSync(promptkitSampleLegacy) ? promptkitSampleLegacy : undefined,
+      readConfig: async () => {
+        try {
+          return JSON.parse(readFileSync(promptkitConfig, 'utf8'));
+        } catch {
+          return null;
+        }
+      },
+    }),
+  );
 
   ctx.tools.register({
     name: 'studio_status',
@@ -327,7 +348,7 @@ export function apply(ctx: Context) {
   ctx.tools.register({
     name: 'studio_build',
     description:
-      '按本地模型拼一份能直接跑的出图工作流（现在覆盖 MOSS / Qwen-Image / Flux / SDXL / SD1.5）。' +
+      '按本地模型拼一份能直接跑的出图工作流（现在覆盖 MOSS / Qwen-Image / Qwen-Image 2.1 / FLUX.3 Klein / Z-Image / Flux / SDXL / SD1.5）。' +
       '给 model（unet 或 checkpoint 文件名）就能自动配 VAE、文本编码器、步数、CFG、采样器；' +
       'save_as 传了就写进 data/workflows，之后 draw 用 workflow 引用它。',
     danger: 'safe',
@@ -337,7 +358,7 @@ export function apply(ctx: Context) {
         model: { type: 'string', description: 'unet 或 checkpoint 的文件名（studio_models 里能看到）' },
         prompt: { type: 'string', description: '写进正面提示词的示例文本' },
         negative: { type: 'string', description: '负面提示词' },
-        family: { type: 'string', description: '强制指定家族：moss / qwen / flux / sdxl / sd15' },
+        family: { type: 'string', description: '强制指定家族：moss / qwen / qwen21 / flux3klein / zimage / flux / sdxl / sd15' },
         clip: { type: 'string', description: '指定文本编码器（默认按家族配）' },
         vae: { type: 'string', description: '指定 VAE（默认按家族配）' },
         width: { type: 'integer' },
@@ -498,7 +519,7 @@ export function apply(ctx: Context) {
       type: 'object',
       properties: {
         action: { type: 'string', enum: ['status', 'start', 'install'], description: 'status 查状态（默认）；start 只启动；install 全量部署' },
-        root: { type: 'string', description: '安装目录；留空用设置里的 comfyRoot，再留空用用户目录下的 ComfyUI' },
+        root: { type: 'string', description: '安装目录；留空部署到插件内 local/comfyui（已有实例则复用设置里的 comfyRoot）' },
         confirm: { type: 'boolean', description: 'install / start 必须显式传 true' },
       },
       additionalProperties: false,
@@ -512,7 +533,7 @@ export function apply(ctx: Context) {
       }
       if (args?.confirm !== true) return { status: 'error', error: `${action} 会动磁盘和网络，要传 confirm: true` };
       if (deployBusy()) return { status: 'error', error: '已有部署任务在跑，先用 status 看进度' };
-      const root = String(args?.root ?? '').trim() || readDeployState(dataDir).root || defaultComfyRoot(cfg);
+      const root = String(args?.root ?? '').trim() || readDeployState(dataDir).root || defaultComfyRoot(cfg) || localInstallRoot(HERE, 'comfyui');
       if (!root) return { status: 'error', error: '没有 ComfyUI 安装目录：请传 root，或先在设置里填 comfyRoot' };
       const task = action === 'start' ? startComfy(root, dataDir, cfg.backends.comfy.baseUrl) : deploy(root, dataDir, { baseUrl: cfg.backends.comfy.baseUrl });
       void task
@@ -548,19 +569,32 @@ export function apply(ctx: Context) {
     }
   };
 
-  const adoptComfy = async (root: string) => {
+  const adoptLocal = async (tool: 'comfyui' | 'sdwebui', root: string, url: string) => {
     const current = await readConfig();
-    const next = applyPatch(current, {
-      backends: {
-        comfy: {
-          enabled: true,
-          modelsDir: join(root, 'models'),
-          canvasDir: join(root, 'user', 'default', 'workflows'),
+    const next = tool === 'sdwebui'
+      ? applyPatch(current, {
+        mode: 'local',
+        backends: { sdwebui: { enabled: true, baseUrl: url, model: current.backends.sdwebui.model || '' } },
+        sdRoot: root,
+        defaultBackend: 'sdwebui',
+      })
+      : applyPatch(current, {
+        mode: 'local',
+        backends: {
+          comfy: {
+            enabled: true,
+            baseUrl: url,
+            modelsDir: join(root, 'models'),
+            canvasDir: join(root, 'user', 'default', 'workflows'),
+          },
         },
-      },
-    });
+        comfyRoot: root,
+        defaultBackend: 'comfy',
+      });
     await ctx.config.save('config.json', next);
   };
+
+  const adoptComfy = async (root: string) => adoptLocal('comfyui', root, 'http://127.0.0.1:8188');
 
   const tailOf = (file: string, max = 4000) => {
     try {
@@ -583,11 +617,28 @@ export function apply(ctx: Context) {
       } catch {
         checks = {};
       }
+      let inventory: any = undefined;
+      try {
+        inventory = await service.models({});
+      } catch {
+        inventory = undefined;
+      }
+      const deployed = readDeployState(dataDir);
+      const localTools = detectLocalTools(cfg, HERE).map((tool) => ({
+        ...tool,
+        url: tool.installed
+          ? (tool.id === 'comfyui'
+            ? (cfg.backends.comfy.baseUrl || (deployed.root === tool.root ? deployed.url : ''))
+            : (cfg.backends.sdwebui.baseUrl || (deployed.root === tool.root ? deployed.url : '')))
+          : '',
+      }));
+      const gpu = checks.comfy?.vramTotalMiB ? [{ vramTotalMiB: checks.comfy.vramTotalMiB, name: checks.comfy.device || 'GPU' }] : [];
+      const rec = recommend({ gpu, comfy: { modelsDir: cfg.backends.comfy.modelsDir || '' } } as any, inventory);
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
       res.setHeader('Cache-Control', 'no-store');
-      res.end(renderSettings({ cfg, publicCfg: publicConfig(cfg), workflows, checks }));
+      res.end(renderSettings({ cfg, publicCfg: publicConfig(cfg), workflows, checks, localTools, inventory, rec, deployed }));
     },
-    { title: '画室设置', settings: true, navigation: true },
+    { title: '画室设置', settings: true },
   );
 
   ctx.web.page(
@@ -649,16 +700,24 @@ export function apply(ctx: Context) {
       const body = await readBody(req, signal);
       if (deployBusy()) return json(res, 409, { ok: false, error: '已有部署任务在跑，先看进度' });
       const action = String(body?.action ?? body?.mode ?? 'install');
+      const tool = body?.tool === 'sdwebui' ? 'sdwebui' : 'comfyui';
       const cfg = await readConfig();
-      const root = String(body?.root ?? '').trim() || defaultComfyRoot(cfg);
-      if (!root) return json(res, 400, { ok: false, error: '没有 ComfyUI 安装目录，请先在设置里填 comfyRoot' });
+      const local = detectLocalTools(cfg, HERE).find((item) => item.id === tool)!;
+      const root = String(body?.root ?? '').trim() || (action === 'start' ? (local.root || local.installRoot) : local.installRoot);
+      if (!root) return json(res, 400, { ok: false, error: '没有安装目录' });
+      const url = String(body?.baseUrl ?? '').trim()
+        || (tool === 'comfyui' ? cfg.backends.comfy.baseUrl : cfg.backends.sdwebui.baseUrl);
       const task =
-        action === 'start'
-          ? startComfy(root, dataDir, cfg.backends.comfy.baseUrl)
-          : deploy(root, dataDir, { baseUrl: cfg.backends.comfy.baseUrl });
+        tool === 'sdwebui'
+          ? (action === 'start'
+            ? startSd(root, dataDir, url)
+            : deploySd(root, dataDir, { baseUrl: url }))
+          : (action === 'start'
+            ? startComfy(root, dataDir, url)
+            : deploy(root, dataDir, { baseUrl: url }));
       void task
         .then(async (state) => {
-          if (state.state === 'running') await adoptComfy(state.root || root);
+          if (state.state === 'running') await adoptLocal(tool, state.root || root, state.url || url);
         })
         .catch(() => undefined);
       json(res, 200, { ok: true, state: readDeployState(dataDir) });
@@ -728,3 +787,4 @@ export function apply(ctx: Context) {
 
   ctx.logger.info(`画室已加载：${join(HERE, 'data')}`);
 }
+

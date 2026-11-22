@@ -225,13 +225,22 @@ export function inferMapping(workflow: Record<string, any>): Mapping {
   if (!positiveText) throw new WorkflowError('认不出正面提示词入口：采样器的 positive 连线没走到任何文本节点');
   bind('prompt', { node: positiveText.node, input: positiveText.field, kind: 'text', mode: 'replace' });
 
+  // Qwen-Image 2.1 把正负提示词塞进同一个 TextEncodeQwenImage21：prompt / negative_prompt 各一个输入。
+  // 采样器 positive/negative 都指向这个节点的 0/1 输出，不能按「两个不同来源」去找负面节点。
+  const positiveNode = workflow[positiveText.node];
+  let inlineNegative = false;
+  if (positiveNode?.class_type === 'TextEncodeQwenImage21' && typeof positiveNode.inputs?.negative_prompt === 'string') {
+    bind('negative', { node: positiveText.node, input: 'negative_prompt', kind: 'text', mode: 'append' });
+    inlineNegative = true;
+  }
+
   let negativeText: { node: string; field: string } | null = null;
-  if (isLink(negativeLink)) {
+  if (!inlineNegative && isLink(negativeLink)) {
     const source = negativeLink[0];
     if (source !== (isLink(positiveLink) ? positiveLink[0] : '')) negativeText = firstTextNode(workflow, source);
   }
   if (negativeText) bind('negative', { node: negativeText.node, input: negativeText.field, kind: 'text', mode: 'append' });
-  else warnings.push('这个工作流没有独立的负面提示词（cfg=1 的蒸馏模型常见），negative 参数会被忽略');
+  else if (!inlineNegative) warnings.push('这个工作流没有独立的负面提示词（cfg=1 的蒸馏模型常见），negative 参数会被忽略');
 
   // 2) 采样参数
   for (const field of ['steps', 'cfg', 'seed', 'noise_seed']) {

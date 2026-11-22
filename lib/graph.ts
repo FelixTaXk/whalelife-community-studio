@@ -3,9 +3,9 @@
  * 输入「用哪个模型」，输出「API 格式的图」，中间那些参数（VAE 配谁、CLIP 用哪种类型、
  * 蒸馏模型几步、CFG 多少、采样器用哪个）按家族取默认值，都能覆盖。
  *
- * 目前覆盖：MOSS 系（unet+clip+vae，含 8 步加速 LoRA）、Qwen-Image 系、Flux、
- * SDXL / SD1.5 单 checkpoint。视频家族（MiniMax/Wan）不在这里拼 —— 那类工作流的自定义节点
- * 太多，硬拼出来容易跑一半报错，继续用现成工作流更稳。
+ * 目前覆盖：MOSS 系（unet+clip+vae，含 8 步加速 LoRA）、Qwen-Image 系（含 2.1 专用文本编码节点）、
+ * FLUX.3 Klein、Z-Image、Flux、SDXL / SD1.5 单 checkpoint。视频家族（MiniMax/Wan）不在这里拼 ——
+ * 那类工作流的自定义节点太多，硬拼出来容易跑一半报错，继续用现成工作流更稳。
  *
  * SPDX-License-Identifier: AGPL-3.0-only
  * Additional terms under AGPLv3 Section 7: see LICENSE-ADDITIONAL.
@@ -23,6 +23,10 @@ export type BuildSpec = {
   /** Flux 要两份文本编码器 */
   clip2?: string;
   clipType?: string;
+  /** 文本编码器放哪：12G 跑 Qwen 2.1 时放 cpu，别和扩散模型抢显存 */
+  clipDevice?: 'default' | 'cpu';
+  /** FLUX.3 Klein 基础版的蒸馏 guidance，默认 3.5 */
+  guidance?: number;
   width?: number;
   height?: number;
   steps?: number;
@@ -51,6 +55,9 @@ export type BuiltWorkflow = {
 const DEFAULTS: Record<string, { width: number; height: number; steps: number; cfg: number; sampler: string; scheduler: string }> = {
   moss: { width: 768, height: 1024, steps: 8, cfg: 2.5, sampler: 'er_sde', scheduler: 'simple' },
   qwen: { width: 768, height: 1024, steps: 6, cfg: 1.0, sampler: 'euler', scheduler: 'simple' },
+  qwen21: { width: 1024, height: 1024, steps: 8, cfg: 1.0, sampler: 'euler', scheduler: 'simple' },
+  flux3klein: { width: 1024, height: 1024, steps: 16, cfg: 1.0, sampler: 'euler', scheduler: 'simple' },
+  zimage: { width: 1024, height: 1024, steps: 8, cfg: 1.0, sampler: 'euler', scheduler: 'simple' },
   flux: { width: 1024, height: 1024, steps: 20, cfg: 1.0, sampler: 'euler', scheduler: 'simple' },
   sdxl: { width: 832, height: 1216, steps: 28, cfg: 6.5, sampler: 'dpmpp_2m', scheduler: 'karras' },
   sd15: { width: 512, height: 768, steps: 28, cfg: 7.0, sampler: 'dpmpp_2m', scheduler: 'karras' },
@@ -60,6 +67,9 @@ const DEFAULTS: Record<string, { width: number; height: number; steps: number; c
 const CLIP_TYPE: Record<string, string> = {
   moss: 'moss_image',
   qwen: 'qwen_image',
+  qwen21: 'qwen_image',
+  flux3klein: 'flux3',
+  zimage: 'lumina2',
   flux: 'flux',
 };
 
@@ -111,9 +121,9 @@ export function buildWorkflow(spec: BuildSpec, inv: ModelInventory): BuiltWorkfl
   if (familyKey === 'video') {
     return fail(`${checkpoint || unet} 是视频模型：生图工作流拼不出来，请用一份现成的视频工作流（video_workflows 里选）`);
   }
-  if (!['moss', 'qwen', 'flux', 'sdxl', 'sd15'].includes(familyKey)) {
+  if (!['moss', 'qwen', 'qwen21', 'flux3klein', 'zimage', 'flux', 'sdxl', 'sd15'].includes(familyKey)) {
     return fail(
-      `认不出 ${checkpoint || unet} 属于哪个家族（moss / qwen / flux / sdxl / sd15）。可以显式传 family 试试`,
+      `认不出 ${checkpoint || unet} 属于哪个家族（moss / qwen / qwen21 / flux3klein / zimage / flux / sdxl / sd15）。可以显式传 family 试试`,
     );
   }
 
@@ -159,6 +169,25 @@ export function buildWorkflow(spec: BuildSpec, inv: ModelInventory): BuiltWorkfl
     if (!resolvedUnet) return fail(`没有 ${familyKey} 的 unet：把文件名传进来，或先放一个到 ComfyUI 的 diffusion_models`);
     used.unet = resolvedUnet;
 
+    // 同一家族里分「基础版 / 蒸馏版」，步数和 CFG 不能混着填。
+    if (familyKey === 'qwen21') {
+      const turbo = /turbo/i.test(resolvedUnet);
+      if (spec.steps == null) defaults.steps = turbo ? 8 : 25;
+      defaults.cfg = spec.cfg ?? 1;
+      notes.push(turbo ? 'Qwen-Image 2.1 Turbo：8 步、CFG 1' : 'Qwen-Image 2.1 基础版：25 步、CFG 1');
+    }
+    if (familyKey === 'flux3klein') {
+      const base = /base/i.test(resolvedUnet);
+      if (spec.steps == null) defaults.steps = base ? 50 : 16;
+      defaults.cfg = spec.cfg ?? 1;
+      notes.push(base ? 'FLUX.3 Klein 基础版：50 步、CFG 1、guidance 3.5' : 'FLUX.3 Klein 蒸馏版：16 步、CFG 1、无 guidance');
+    }
+    if (familyKey === 'zimage') {
+      if (spec.steps == null) defaults.steps = 8;
+      defaults.cfg = spec.cfg ?? 1;
+      notes.push('Z-Image Turbo：8 步、CFG 1，中文提示词直接写');
+    }
+
     const clipList = inv.clips.map((item) => item.name);
     const resolvedClip = spec.clip || pairFor(familyKey, clipList, 'clip');
     if (!resolvedClip) {
@@ -167,6 +196,9 @@ export function buildWorkflow(spec: BuildSpec, inv: ModelInventory): BuiltWorkfl
       );
     }
     used.clip = resolvedClip;
+    if (familyKey === 'qwen21' && /int8|w4a8/i.test(resolvedClip)) {
+      notes.push(`文本编码器用 ${resolvedClip}（12G 更省内存）`);
+    }
 
     const vaeList = inv.vaes.map((item) => item.name);
     const resolvedVae = spec.vae || pairFor(familyKey, vaeList, 'vae');
@@ -193,7 +225,12 @@ export function buildWorkflow(spec: BuildSpec, inv: ModelInventory): BuiltWorkfl
       if (!inv.clipTypes.includes(clipType)) {
         notes.push(`CLIPLoader.type 填了 ${clipType}，ComfyUI 报的可用值里没有它，跑不通就在设置页改成现成的取值`);
       }
-      const clipId = put('CLIPLoader', { clip_name: resolvedClip, type: clipType, device: 'default' });
+      const clipId = put('CLIPLoader', {
+        clip_name: resolvedClip,
+        type: clipType,
+        device: spec.clipDevice ?? (familyKey === 'qwen21' ? 'cpu' : 'default'),
+      });
+      if (familyKey === 'qwen21') notes.push('Qwen-Image 2.1 的 8B 文本编码器放 CPU：12G 卡先保扩散模型');
       clipRef = [clipId, 0];
     }
 
@@ -237,9 +274,29 @@ export function buildWorkflow(spec: BuildSpec, inv: ModelInventory): BuiltWorkfl
     notes.push(`接角色 LoRA ${lora.name}（${weight}）`);
   }
 
-  const positive = put('CLIPTextEncode', { text: spec.prompt, clip: clipRef });
-  const negativeId = put('CLIPTextEncode', { text: negative, clip: clipRef });
-  const latent = put('EmptyLatentImage', { width: defaults.width, height: defaults.height, batch_size: 1 });
+  const positive = familyKey === 'qwen21'
+    ? put('TextEncodeQwenImage21', {
+        clip: clipRef,
+        prompt: spec.prompt,
+        negative_prompt: negative,
+        resolution: Math.max(defaults.width, defaults.height),
+      })
+    : put('CLIPTextEncode', { text: spec.prompt, clip: clipRef });
+  const negativeId = familyKey === 'qwen21'
+    ? null
+    : put('CLIPTextEncode', { text: negative, clip: clipRef });
+  let positiveRef: [string, number] = [positive, 0];
+  if (familyKey === 'flux3klein' && /base/i.test(String(used.unet ?? ''))) {
+    const guided = put('FluxGuidance', { conditioning: positiveRef, guidance: spec.guidance ?? 3.5 });
+    positiveRef = [guided, 0];
+    notes.push(`基础版接 FluxGuidance ${spec.guidance ?? 3.5}，KSampler 保持 CFG 1`);
+  }
+  const latentClass = familyKey === 'flux3klein'
+    ? 'EmptyFlux2LatentImage'
+    : familyKey === 'zimage'
+      ? 'EmptySD3LatentImage'
+      : 'EmptyLatentImage';
+  const latent = put(latentClass, { width: defaults.width, height: defaults.height, batch_size: 1 });
   const sampler = put('KSampler', {
     seed: spec.seed ?? 0,
     steps: defaults.steps,
@@ -248,8 +305,8 @@ export function buildWorkflow(spec: BuildSpec, inv: ModelInventory): BuiltWorkfl
     scheduler: defaults.scheduler,
     denoise: 1.0,
     model: modelRef,
-    positive: [positive, 0],
-    negative: [negativeId, 0],
+    positive: positiveRef,
+    negative: negativeId ? [negativeId, 0] : [positive, 1],
     latent_image: [latent, 0],
   });
   const decode = put('VAEDecode', { samples: [sampler, 0], vae: vaeRef });

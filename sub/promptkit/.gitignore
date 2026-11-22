@@ -1,0 +1,6 @@
+data/
+dist/
+*.wlpkg.gz
+node_modules/
+.env
+.env.*

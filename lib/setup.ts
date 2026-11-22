@@ -11,10 +11,9 @@
 import { spawn } from 'node:child_process';
 import { execFile } from 'node:child_process';
 import { existsSync, mkdirSync, openSync, readFileSync, statfsSync, writeFileSync } from 'node:fs';
-import { join, isAbsolute, dirname } from 'node:path';
+import { join, isAbsolute } from 'node:path';
 import { promisify } from 'node:util';
 import os from 'node:os';
-import { defaultComfyRoot } from './config.ts';
 
 const execFileAsync = promisify(execFile);
 
@@ -180,23 +179,6 @@ async function probePython(candidates: string[]) {
   return null;
 }
 
-function candidateRoots(hint: string) {
-  const list = [
-    String(process.env.COMFY_ROOT ?? '').trim(),
-    hint,
-    defaultComfyRoot(),
-    join(os.homedir(), 'ComfyUI'),
-    join(os.homedir(), 'Documents', 'ComfyUI'),
-  ].filter(Boolean);
-  const seen = new Set<string>();
-  return list.filter((item) => {
-    const key = item.toLowerCase();
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-}
-
 async function comfyHealth(baseUrl: string, timeoutMs = 4_000) {
   try {
     const controller = new AbortController();
@@ -214,12 +196,12 @@ async function comfyHealth(baseUrl: string, timeoutMs = 4_000) {
 
 /** 本机体检：所有探测都不抛异常，缺什么就报缺什么。 */
 export async function probe(options: { baseUrl?: string; modelsDirHint?: string; pythonHint?: string; root?: string } = {}): Promise<SystemProbe> {
-  const baseUrl = options.baseUrl || 'http://127.0.0.1:8188';
-  const roots = candidateRoots(options.root || (options.modelsDirHint ? dirname(String(options.modelsDirHint)) : ''));
-  const foundRoot = roots.find((root) => existsSync(join(root, 'main.py'))) || '';
+  const baseUrl = options.baseUrl || '';
+  const foundRoot = options.root && existsSync(join(options.root, 'main.py')) ? options.root : '';
   const candidates = [
     options.pythonHint || '',
     foundRoot ? join(foundRoot, 'venv', 'Scripts', 'python.exe') : '',
+    foundRoot ? join(foundRoot, 'venv', 'bin', 'python') : '',
     foundRoot ? join(foundRoot, 'python_embeded', 'python.exe') : '',
   ].filter(Boolean);
 
@@ -227,12 +209,12 @@ export async function probe(options: { baseUrl?: string; modelsDirHint?: string;
     probeGpu(),
     probePython(candidates),
     run('git', ['--version'], 10_000),
-    comfyHealth(baseUrl),
+    baseUrl ? comfyHealth(baseUrl) : Promise.resolve({ online: false, version: '', device: '' }),
   ]);
 
   const diskPath = foundRoot || os.homedir();
   const disk = probeDisk(diskPath);
-  const modelsDir = foundRoot ? join(foundRoot, 'models') : options.modelsDirHint || '';
+  const modelsDir = foundRoot ? join(foundRoot, 'models') : '';
   const venvPython = foundRoot ? [
     join(foundRoot, 'venv', 'Scripts', 'python.exe'),
     join(foundRoot, 'venv', 'bin', 'python'),
@@ -259,196 +241,12 @@ export async function probe(options: { baseUrl?: string; modelsDirHint?: string;
       version: health.version,
       device: health.device || gpu[0]?.name || '',
     },
-    candidates: roots,
+    candidates: candidates.filter(Boolean),
   };
 }
 
-export type ModelRec = {
-  id: string;
-  name: string;
-  family: 'moss' | 'qwen' | 'flux' | 'sdxl' | 'sd15' | 'minimax';
-  purpose: string;
-  vramGB: number;
-  fit: 'best' | 'ok' | 'heavy' | 'light';
-  local: boolean;
-  /** 本机命中的真实文件名（有就能直接 studio_build） */
-  localModel?: string;
-  files: Array<{ dir: string; name: string; sizeGB?: number; url?: string; note?: string }>;
-  workflow: { width: number; height: number; steps: number; cfg: number; sampler: string; scheduler: string; note: string };
-  notes: string[];
-};
-
-export type Recommendation = {
-  tier: string;
-  summary: string;
-  gpu: string;
-  vramGB: number;
-  items: ModelRec[];
-  next: string[];
-};
-
-const WORKFLOWS: Record<string, ModelRec['workflow']> = {
-  moss: { width: 768, height: 1024, steps: 8, cfg: 2.5, sampler: 'er_sde', scheduler: 'simple', note: 'MOSS 8 步加速 LoRA，1024 长边' },
-  qwen: { width: 768, height: 1024, steps: 6, cfg: 1, sampler: 'euler', scheduler: 'simple', note: 'Qwen-Image 6 步加速' },
-  flux: { width: 1024, height: 1024, steps: 20, cfg: 1, sampler: 'euler', scheduler: 'simple', note: 'Flux 标准 20 步' },
-  sdxl: { width: 1024, height: 1024, steps: 28, cfg: 7, sampler: 'dpmpp_2m', scheduler: 'karras', note: 'SDXL 28 步' },
-  sd15: { width: 512, height: 768, steps: 25, cfg: 7, sampler: 'dpmpp_2m', scheduler: 'karras', note: 'SD1.5 512×768' },
-  minimax: { width: 864, height: 480, steps: 4, cfg: 1, sampler: 'euler', scheduler: 'simple', note: 'MiniMax H3 4 步 Turbo，视频' },
-};
-
-/** 按显存分档 + 本机已有权重，给一套先能跑起来的组合。 */
-export function recommend(probe: SystemProbe, inventory?: { checkpoints?: Array<{ name: string }>; unets?: Array<{ name: string }>; vaes?: Array<{ name: string }>; clips?: Array<{ name: string }>; loras?: Array<{ name: string }> }): Recommendation {
-  const gpu = probe.gpu[0];
-  const vramGB = gpu?.vramTotalMiB ? gpu.vramTotalMiB / 1024 : 0;
-  const allNames: string[] = [];
-  for (const list of [inventory?.checkpoints, inventory?.unets, inventory?.vaes, inventory?.clips, inventory?.loras]) {
-    for (const item of list || []) if (item?.name) allNames.push(String(item.name));
-  }
-  const names = new Set(allNames.map((name) => name.toLowerCase()));
-  const has = (needle: string) => [...names].some((name) => name.includes(needle.toLowerCase()));
-  const pick = (needles: string[]) =>
-    allNames.find((name) => needles.some((needle) => name.toLowerCase().includes(needle.toLowerCase()))) || '';
-
-  let tier = 'cpu';
-  if (vramGB >= 24) tier = '24G+';
-  else if (vramGB >= 16) tier = '16–24G';
-  else if (vramGB >= 11) tier = '11–16G';
-  else if (vramGB >= 7) tier = '7–11G';
-  else if (vramGB >= 4) tier = '4–7G';
-
-  const items: ModelRec[] = [];
-
-  const mossLocal = pick(['moss_image', 'moss']);
-  items.push({
-    id: 'moss',
-    name: 'MOSS（int8 量化）',
-    family: 'moss',
-    purpose: '中文提示词友好、人像和文字都稳，适合日常自拍/插画',
-    vramGB: 12,
-    fit: vramGB >= 11 ? (vramGB >= 16 ? 'best' : 'ok') : 'heavy',
-    local: Boolean(mossLocal),
-    localModel: mossLocal || undefined,
-    files: [
-      { dir: 'models/unet', name: 'moss_image_sft_int8_convrot.safetensors', note: '需自备（本机若无，插件无法代下）' },
-      { dir: 'models/text_encoders', name: 'qwen3.5_9b_w4a8_gptq.safetensors', note: 'CLIPLoader.type=moss_image' },
-      { dir: 'models/vae', name: 'flux2-vae_small.safetensors' },
-      { dir: 'models/loras', name: 'MOSS_8_step_lora.safetensors', note: '8 步加速' },
-    ],
-    workflow: WORKFLOWS.moss,
-    notes: ['显存 ≥11G 建议首选；768×1024 起步，爆显存就把长边降到 640。'],
-  });
-
-  items.push({
-    id: 'sdxl',
-    name: 'SDXL 1.0',
-    family: 'sdxl',
-    purpose: '通用写实/插画底模，生态最全，LoRA 最多',
-    vramGB: 8,
-    fit: vramGB >= 10 ? 'best' : vramGB >= 6 ? 'ok' : 'light',
-    local: has('sd_xl_base') || has('sdxl'),
-    localModel: pick(['sd_xl_base', 'sdxl']) || undefined,
-    files: [
-      {
-        dir: 'models/checkpoints',
-        name: 'sd_xl_base_1.0.safetensors',
-        sizeGB: 6.9,
-        url: 'https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/resolve/main/sd_xl_base_1.0.safetensors',
-      },
-      {
-        dir: 'models/vae',
-        name: 'sdxl_vae.safetensors',
-        sizeGB: 0.3,
-        url: 'https://huggingface.co/stabilityai/sdxl-vae/resolve/main/sdxl_vae.safetensors',
-      },
-    ],
-    workflow: WORKFLOWS.sdxl,
-    notes: ['1024×1024 约 8G 显存；显存紧张可 768×1024 + fp16。'],
-  });
-
-  items.push({
-    id: 'sd15',
-    name: 'SD 1.5（写实底模：majicMIX realistic 等）',
-    family: 'sd15',
-    purpose: '低显存/CPU 也能跑，出图快，适合先跑通链路',
-    vramGB: 4,
-    fit: vramGB >= 6 ? 'ok' : 'best',
-    local: has('v1-5-pruned') || has('majicmix'),
-    localModel: pick(['v1-5-pruned', 'majicmix']) || undefined,
-    files: [
-      {
-        dir: 'models/checkpoints',
-        name: 'v1-5-pruned-emaonly.safetensors',
-        sizeGB: 4.0,
-        url: 'https://huggingface.co/runwayml/stable-diffusion-v1-5/resolve/main/v1-5-pruned-emaonly.safetensors',
-      },
-      {
-        dir: 'models/vae',
-        name: 'vae-ft-mse-840000-ema-pruned.safetensors',
-        sizeGB: 0.3,
-        url: 'https://huggingface.co/stabilityai/sd-vae-ft-mse-original/resolve/main/vae-ft-mse-840000-ema-pruned.safetensors',
-      },
-    ],
-    workflow: WORKFLOWS.sd15,
-    notes: ['SD1.5 原生 512×768；人像建议再加写实 LoRA（可选）。'],
-  });
-
-  items.push({
-    id: 'qwen',
-    name: 'Qwen-Image 2.1',
-    family: 'qwen',
-    purpose: '中文语义强、出图干净，适合海报/文字排版',
-    vramGB: 16,
-    fit: vramGB >= 20 ? 'ok' : 'heavy',
-    local: has('qwen_image'),
-    localModel: pick(['qwen_image']) || undefined,
-    files: [{ dir: 'models/unet', name: 'qwen_image_*.safetensors', note: '需自备权重（本机没有可用的 qwen 权重）' }],
-    workflow: WORKFLOWS.qwen,
-    notes: ['本机若无权重就先不折腾；有 20G+ 显存再上。'],
-  });
-
-  items.push({
-    id: 'minimax',
-    name: 'MiniMax H3（文生视频）',
-    family: 'minimax',
-    purpose: '图生/文生视频，带原生音频',
-    vramGB: 16,
-    fit: vramGB >= 24 ? 'ok' : 'heavy',
-    local: has('minimax_h3'),
-    localModel: pick(['minimax_h3_fl2va', 'minimax_h3']) || undefined,
-    files: [{ dir: 'models/unet', name: 'minimax_h3_fl2va_pruned_int8_convrot.safetensors', note: '需自备整组 H3 权重' }],
-    workflow: WORKFLOWS.minimax,
-    notes: ['H3 是整套权重（unet + 文本编码器 + 双 VAE + turbo LoRA），显存不够会直接 OOM。'],
-  });
-
-  const rank = { best: 0, ok: 1, light: 2, heavy: 3 } as const;
-  items.sort((a, b) => {
-    if (a.local !== b.local) return a.local ? -1 : 1;
-    return rank[a.fit] - rank[b.fit];
-  });
-
-  const gpuName = gpu ? `${gpu.name}（${vramGB ? vramGB.toFixed(0) + 'G 显存' : '显存未知'}）` : '没识别到 NVIDIA 显卡';
-  const summary =
-    !gpu || !vramGB
-      ? '没读出显存：先按 SD1.5 跑通，或改用网络后端；有 NVIDIA 显卡的话装好驱动再体检一次。'
-      : vramGB >= 11
-        ? '可以直接跑 MOSS + SDXL；视频等显存 ≥16G 再说。'
-        : vramGB >= 7
-          ? '优先 SDXL 768×1024；MOSS 可能吃力，想稳就 SD1.5。'
-          : '显存偏小：SD1.5 512×768 或直接用网络后端。';
-
-  return {
-    tier,
-    summary,
-    gpu: gpuName,
-    vramGB: Math.round(vramGB),
-    items,
-    next: [
-      '模型放到 ' + (probe.comfy.modelsDir || '<ComfyUI>/models') + ' 对应的子目录（checkpoints / unet / vae / text_encoders / loras）。',
-      '放好后调用 studio_models(refresh=true)，再 studio_build(model=…, save_as=…) 生成工作流并设为默认。',
-      '没有本地显卡或显存太小：设置页把默认后端切到 OpenAI 兼容 / Gemini / 通义万相。',
-    ],
-  };
-}
+export type { ModelRec, Recommendation } from './model-catalog.ts';
+export { recommend } from './model-catalog.ts';
 
 function writeLauncher(root: string) {
   if (process.platform !== 'win32') return '';
@@ -525,6 +323,144 @@ export async function startComfy(root: string, dataDir: string, baseUrl = 'http:
     pid: child.pid,
     log,
   });
+}
+
+async function sdHealth(baseUrl: string, timeoutMs = 4_000) {
+  const base = String(baseUrl || '').replace(/\/+$/, '');
+  if (!base) return { online: false, models: [] as string[] };
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const res = await fetch(`${base}/sdapi/v1/sd-models`, { signal: controller.signal });
+    clearTimeout(timer);
+    if (!res.ok) return { online: false, models: [] as string[] };
+    const body: any = await res.json().catch(() => []);
+    return { online: true, models: Array.isArray(body) ? body.map((item: any) => String(item.title ?? item.model_name ?? '')).filter(Boolean) : [] };
+  } catch {
+    return { online: false, models: [] as string[] };
+  }
+}
+
+async function waitSd(baseUrl: string, timeoutMs = 240_000) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    const health = await sdHealth(baseUrl, 3_000);
+    if (health.online) return health;
+    await new Promise((resolve) => setTimeout(resolve, 3_000));
+  }
+  return { online: false, models: [] as string[] };
+}
+
+function writeSdLauncher(root: string) {
+  if (process.platform !== 'win32') return '';
+  const bat = join(root, 'start-sd-webui.bat');
+  const body = [
+    '@echo off',
+    'cd /d "%~dp0"',
+    'if exist "venv\\Scripts\\python.exe" (',
+    '  "venv\\Scripts\\python.exe" launch.py --api --listen 127.0.0.1 --port 7860',
+    ') else (',
+    '  python launch.py --api --listen 127.0.0.1 --port 7860',
+    ')',
+  ].join('\r\n');
+  writeFileSync(bat, body + '\r\n', 'utf8');
+  return bat;
+}
+
+/** 起 SD-WebUI（A1111 / Forge 兼容 launch.py）。 */
+export async function startSd(root: string, dataDir: string, baseUrl = ''): Promise<DeployState> {
+  const url = baseUrl || 'http://127.0.0.1:7860';
+  const health = await sdHealth(url);
+  if (health.online) {
+    return writeDeployState(dataDir, { state: 'running', step: '已有实例', message: 'SD-WebUI 已经在跑', root, url });
+  }
+  const python = [join(root, 'venv', 'Scripts', 'python.exe'), join(root, 'venv', 'bin', 'python')].find((item) => existsSync(item));
+  if (!existsSync(join(root, 'launch.py')) || !python) throw Error('这个目录不是装好的 SD-WebUI（缺 launch.py 或 venv）');
+
+  mkdirSync(join(dataDir, 'logs'), { recursive: true });
+  const log = join(dataDir, 'logs', 'sdwebui.log');
+  writeDeployState(dataDir, { state: 'starting', step: '启动 SD-WebUI', message: '正在启动 ' + root, root, url, log });
+  const fd = openSync(log, 'a');
+  const child = spawn(python, ['launch.py', '--api', '--listen', '127.0.0.1', '--port', '7860'], {
+    cwd: root,
+    detached: true,
+    windowsHide: true,
+    stdio: ['ignore', fd, fd],
+  });
+  child.unref();
+  const waited = await waitSd(url);
+  if (waited.online) {
+    return writeDeployState(dataDir, { state: 'running', step: '已启动', message: 'SD-WebUI 已就绪', root, url, pid: child.pid, log });
+  }
+  return writeDeployState(dataDir, {
+    state: 'failed',
+    step: '启动超时',
+    message: '已拉起进程但 4 分钟内没等到 /sdapi/v1/sd-models，看日志：' + log,
+    root,
+    url,
+    pid: child.pid,
+    log,
+  });
+}
+
+/** 一键部署 SD-WebUI：git clone → venv → torch → requirements → 起 7860。 */
+export async function deploySd(root: string, dataDir: string, options: { baseUrl?: string } = {}): Promise<DeployState> {
+  if (busy) throw Error('已经有一个部署任务在跑');
+  if (!isAbsolute(root)) throw Error('安装目录要给绝对路径');
+  const baseUrl = options.baseUrl || 'http://127.0.0.1:7860';
+  mkdirSync(join(dataDir, 'logs'), { recursive: true });
+  const logPath = join(dataDir, 'logs', 'deploy.log');
+  const log = (line: string) => {
+    try {
+      writeFileSync(logPath, `[${new Date().toISOString()}] ${line}\n`, { flag: 'a' });
+    } catch {
+      /* 日志写不进去不影响主流程 */
+    }
+  };
+  const step = (state: DeployState['state'], stepText: string, message: string) =>
+    writeDeployState(dataDir, { state, step: stepText, message, root, url: baseUrl, log: logPath });
+
+  busy = true;
+  step('installing', '体检', '正在检查 Python / Git / 显卡');
+  try {
+    const info = await probe({ baseUrl: '' });
+    if (!info.python) throw Error('没找到 Python 3：先装 https://www.python.org/downloads/windows/（勾选 Add to PATH），再回来点一次。');
+    if (!info.git) throw Error('没找到 git：先装 https://git-scm.com/download/win，或用 git 手动 clone SD-WebUI 到该目录。');
+    const venvPython = process.platform === 'win32' ? join(root, 'venv', 'Scripts', 'python.exe') : join(root, 'venv', 'bin', 'python');
+    if (!existsSync(join(root, 'launch.py'))) {
+      step('installing', '下载 SD-WebUI', 'git clone 到 ' + root);
+      log('git clone ' + root);
+      const created = await run('git', ['clone', '--depth', '1', 'https://github.com/AUTOMATIC1111/stable-diffusion-webui.git', root], 600_000);
+      log(created.out);
+      if (!existsSync(join(root, 'launch.py'))) throw Error('git clone 失败：' + created.out.slice(0, 400));
+    }
+    if (!existsSync(venvPython)) {
+      step('installing', '建虚拟环境', 'python -m venv venv');
+      const made = await run(info.python.path, ['-m', 'venv', join(root, 'venv')], 180_000);
+      log(made.out);
+      if (!existsSync(venvPython)) throw Error('建 venv 失败：' + made.out.slice(0, 400));
+    }
+    step('installing', '装 pip', '升级 pip / wheel');
+    log((await run(venvPython, ['-m', 'pip', 'install', '--upgrade', 'pip', 'wheel'], 300_000, root)).out);
+    const torch = torchSpec(info.gpu);
+    step('installing', '装 PyTorch', torch.label);
+    const torchRun = await run(venvPython, ['-m', 'pip', 'install', ...torch.args, '--index-url', torch.url], 3_600_000, root);
+    log(torchRun.out);
+    if (!torchRun.ok) throw Error('装 torch 失败：' + torchRun.out.slice(-600));
+    const requirements = existsSync(join(root, 'requirements_versions.txt')) ? 'requirements_versions.txt' : 'requirements.txt';
+    step('installing', '装依赖', 'pip install -r ' + requirements);
+    const req = await run(venvPython, ['-m', 'pip', 'install', '-r', join(root, requirements)], 3_600_000, root);
+    log(req.out);
+    if (!req.ok) throw Error('装依赖失败：' + req.out.slice(-600));
+    log('launcher: ' + (writeSdLauncher(root) || 'n/a'));
+    return await startSd(root, dataDir, baseUrl);
+  } catch (error: any) {
+    const message = String(error?.message ?? error).slice(0, 800);
+    log('FAILED: ' + message);
+    return writeDeployState(dataDir, { state: 'failed', step: '部署失败', message, root, url: baseUrl, log: logPath });
+  } finally {
+    busy = false;
+  }
 }
 
 /** 一键部署：git clone → venv → torch → requirements → 起服务。整个过程后台跑，状态落盘。 */
@@ -607,3 +543,4 @@ export const SETUP_README = [
   '装完会写 start-comfyui.bat，之后也可以自己双击启动。',
   '模型按 recommend() 给的目录放好，再用 studio_build 生成工作流。',
 ].join('\n');
+

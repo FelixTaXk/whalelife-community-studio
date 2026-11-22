@@ -1,108 +1,129 @@
-// 从鱼仔的 PromptForge 词库生成画室可用的 data/prompts.json。
+// 把一份外部词库整理成提示词小抄认的 JSON 格式。
+//
 // 用法：
-//   node scripts/build-data.mjs          # 安全子集：去掉 NSFW 四类、人物基础 / 身材 / 面部 / 怪物，再按黑名单过滤
-//   node scripts/build-data.mjs --full   # 全量：保留全部 25 个分类与 2742 条词（含 NSFW 四类，由插件开关单独控制）
-// 输入：D:/dafeiyu/fish-extra/lib/forge-data.json（只读，不改源文件；可用环境变量 FORGE_SRC 覆盖）
-// 输出：data/prompts.json（引擎认的格式：categories + tags）
+//   node scripts/build-data.mjs --source <词库.json> [--out data/prompts.json]
+//                               [--only 分类1,分类2] [--exclude 分类3]
 //
 // 说明：
-// 1) 全量模式不做任何删减，NSFW 四类照样写进文件；是否能用由插件的「NSFW 分类」开关决定，
-//    默认关闭时这四个分类不会出现在查词工具和自动补词里。
-// 2) 安全子集模式的过滤规则：整类剔除见 DROP_CATS，词条级黑名单见 ZH_BLOCK / EN_BLOCK。
-// 3) 两种模式都不导出 presets / chars / models —— 引擎只读分类和词条，导出等于白占体积。
+// 1) 源数据可以是本插件的 {categories,tags}，也可以是常见上游的 {cats,tags}。
+// 2) 词条里除 cat / category / id 之外的字符串字段都会原样保留，字段名由插件配置决定，
+//    不要求必须叫 zh / en。
+// 3) 不内置任何删类或词条黑名单；要筛分类请用 --only / --exclude。
+// 4) 只读源文件。输出默认写到插件自己的 data/prompts.json；data/ 不会进发布包。
 
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const SRC = process.env.FORGE_SRC || 'D:/dafeiyu/fish-extra/lib/forge-data.json';
-const OUT = join(HERE, '..', 'data', 'prompts.json');
+const PKG = join(HERE, '..');
 
-const FULL = process.argv.includes('--full') || process.env.PROMPTKIT_FULL === '1';
+function usage(message = '') {
+  if (message) console.error(`\n${message}`);
+  console.error(`
+用法：
+  node scripts/build-data.mjs --source <词库.json> [--out data/prompts.json]
+                              [--only 分类1,分类2] [--exclude 分类3]
 
-const DROP_CATS = new Set([
-  'base', 'body', 'face',
-  'nsfwbody', 'nsfwcloth', 'nsfwact', 'nsfwplay',
-  'monster',
-]);
-
-const ZH_BLOCK = [
-  '裸', '内衣', '胸罩', '内裤', '丁字', '乳', '臀部', '翘臀', '大腿', '腿缝',
-  '私处', '下体', '性器', '性爱', '做爱', '情色', '色情', '色气', '情趣',
-  '暴露', '走光', '湿身', '汗珠', '呻吟', '喘息', '微喘', '媚', '沉醉',
-  '羞耻', '口交', '插入', '射精', '精液', '潮红', '泛红',
-  '床', '被褥', '浴缸', '淋浴', '浴室', '温泉', '睡裙', '吊带', '蕾丝',
-  '丝袜', '过膝袜', '女仆', '制服诱惑', '泳装', '比基尼', '泳衣', '足交',
-  '抹胸', '露脐', '露肩', '躺', '仰卧', '俯卧', '四肢着地', '翘腿', '卧室',
-  '床上', '枕', '被窝', '棉被', '侧卧', '趴着', '俯身',
-];
-
-const EN_BLOCK = [
-  'nude', 'naked', 'topless', 'bottomless', 'lingerie', 'underwear', 'bra',
-  'panties', 'panty', 'thong', 'garter', 'thighhighs', 'thigh-highs',
-  'sex', 'sexual', 'erotic', 'nsfw', 'bondage', 'bdsm', 'hentai', 'loli',
-  'child', 'underage', 'teen', 'bed', 'bedsheet', 'bathtub', 'shower',
-  'onsen', 'cleavage', 'nipple', 'breasts', 'breast', 'ass', 'thigh',
-  'thighs', 'crotch', 'cum', 'moan', 'panting', 'aroused', 'seductive',
-  'sittingonlap', 'onallfours', 'lying', 'lying on side', 'sleeping on side',
-  'on stomach', 'spread legs',
-];
-
-const EN_RE = new RegExp(
-  '\\b(' + EN_BLOCK.map((w) => w.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&')).join('|') + ')\\b',
-  'i',
-);
-
-function blocked(tag) {
-  const zh = String(tag.zh ?? '');
-  const en = String(tag.en ?? '');
-  if (ZH_BLOCK.some((w) => zh.includes(w))) return true;
-  if (EN_RE.test(en)) return true;
-  // 中文没字、英文也没有的残条不要
-  if (!zh.trim() && !en.trim()) return true;
-  return false;
+  --source    必填。源词库路径，支持 {categories,tags} 或 {cats,tags}。
+  --out       可选。输出路径，默认 data/prompts.json。
+  --only      可选。只保留这些分类 id，逗号分隔。
+  --exclude   可选。排除这些分类 id，逗号分隔。
+`);
+  process.exit(1);
 }
 
-const src = JSON.parse(readFileSync(SRC, 'utf8'));
-// 源数据用 cats，插件引擎认 categories；这里统一成引擎的字段名。
-const srcCats = src.categories ?? src.cats ?? [];
-const srcTags = src.tags ?? [];
+function argValue(name, fallback = '') {
+  const index = process.argv.indexOf(name);
+  if (index < 0) return fallback;
+  const value = process.argv[index + 1];
+  if (!value || value.startsWith('--')) usage(`${name} 后面要跟一个值`);
+  return value;
+}
 
-const tags = FULL ? srcTags.filter((t) => String(t.cat ?? '')) : srcTags.filter(
-  (t) => !DROP_CATS.has(String(t.cat ?? '')) && !blocked(t),
+function listArg(name) {
+  return String(argValue(name, ''))
+    .split(/[,，]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+let source = argValue('--source', '');
+if (!source) {
+  const positional = process.argv.slice(2).find((item) => !item.startsWith('--') && !process.argv[process.argv.indexOf(item) - 1]?.startsWith('--'));
+  source = positional || '';
+}
+if (!source) usage('缺少 --source <词库.json>');
+source = resolve(source);
+if (!existsSync(source)) usage(`源文件不存在：${source}`);
+
+const out = resolve(argValue('--out', join(PKG, 'data', 'prompts.json')));
+const only = listArg('--only');
+const exclude = listArg('--exclude');
+
+const raw = JSON.parse(readFileSync(source, 'utf8'));
+const sourceCategories = Array.isArray(raw.categories) ? raw.categories : Array.isArray(raw.cats) ? raw.cats : [];
+const sourceTags = Array.isArray(raw.tags) ? raw.tags : [];
+if (!sourceCategories.length) usage('源数据顶层没有 categories 数组（也没有 cats）');
+if (!sourceTags.length) usage('源数据顶层没有 tags 数组，或 tags 是空的');
+
+const selected = new Set(
+  sourceCategories
+    .filter((category) => category && typeof category.id === 'string' && category.id)
+    .map((category) => String(category.id))
+    .filter((id) => (only.length ? only.includes(id) : true))
+    .filter((id) => (exclude.length ? !exclude.includes(id) : true)),
 );
+if (!selected.size) usage('筛选后没有剩下任何分类');
 
-const counts = new Map();
-for (const t of tags) counts.set(t.cat, (counts.get(t.cat) ?? 0) + 1);
-
-const categories = srcCats
-  .filter((c) => (FULL || !DROP_CATS.has(String(c.id ?? ''))) && counts.get(c.id))
-  .map((c) => ({
-    id: c.id,
-    name: c.name,
-    icon: c.icon ?? '',
-    count: counts.get(c.id),
-  }));
-
-const nsfwTags = tags.filter((t) => /^nsfw/i.test(String(t.cat ?? ''))).length;
-
-const out = {
-  version: 1,
-  mode: FULL ? 'full' : 'safe',
-  source: src.source || 'PromptForge',
-  sourceGeneratedAt: src.generatedAt || '',
-  note: FULL
-    ? 'full：保留全部 25 个分类与全部词条（含 NSFW 四类）；NSFW 是否可用由插件「NSFW 分类」开关决定，默认关闭。'
-    : 'safe：仅保留非成人分类；已按黑名单过滤色情与未成年相关词条',
-  builtAt: new Date().toISOString(),
-  categories,
-  tags: tags.map((t) => ({ en: t.en ?? '', zh: t.zh ?? '', cat: t.cat })),
+const tagFields = (tag) => {
+  const values = {};
+  for (const [key, value] of Object.entries(tag ?? {})) {
+    if (key === 'cat' || key === 'category' || key === 'id') continue;
+    if (typeof value === 'string' && value.trim()) values[key] = value.trim();
+  }
+  return values;
 };
 
-mkdirSync(dirname(OUT), { recursive: true });
-writeFileSync(OUT, JSON.stringify(out), 'utf8');
+const tags = [];
+for (const tag of sourceTags) {
+  const cat = String(tag?.cat ?? tag?.category ?? '');
+  if (!selected.has(cat)) continue;
+  const values = tagFields(tag);
+  if (!Object.keys(values).length) continue;
+  tags.push({ cat, ...values });
+}
 
-console.log(
-  `mode=${out.mode} categories=${categories.length} tags=${tags.length} nsfwTags=${nsfwTags} bytes=${Buffer.byteLength(JSON.stringify(out))}`,
-);
+const counts = new Map();
+for (const tag of tags) counts.set(tag.cat, (counts.get(tag.cat) ?? 0) + 1);
+
+const categories = sourceCategories
+  .filter((category) => category && selected.has(String(category.id ?? '')) && counts.get(String(category.id)))
+  .map((category) => {
+    const item = {
+      id: String(category.id),
+      name: String(category.name ?? category.id),
+    };
+    for (const key of ['icon', 'role', 'nsfw', 'adult']) {
+      if (category[key] !== undefined) item[key] = category[key];
+    }
+    item.count = counts.get(String(category.id));
+    return item;
+  });
+
+const clean = {
+  version: raw.version ?? 1,
+  license: String(raw.license ?? ''),
+  source: String(raw.source ?? ''),
+  note: String(raw.note ?? ''),
+  builtAt: new Date().toISOString(),
+  categories,
+  tags,
+};
+
+mkdirSync(dirname(out), { recursive: true });
+writeFileSync(out, JSON.stringify(clean, null, 2), 'utf8');
+
+console.log(`source=${source}`);
+console.log(`out=${out}`);
+console.log(`categories=${categories.length} tags=${tags.length} bytes=${statSync(out).size}`);

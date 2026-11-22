@@ -8,7 +8,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  * Additional terms under AGPLv3 Section 7: see LICENSE-ADDITIONAL.
  */
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -48,10 +48,16 @@ export type ShotContext = {
 export type ScheduleSource = { enabled: boolean; dataDir: string };
 export type WardrobeSource = { enabled: boolean; dataDir: string; personaId: string };
 
+/** 姿势子插件：dataDir 指向含 config.json 的目录，catalog.json 在同一目录或上级 assets/ 里。 */
+export type PoseSource = { enabled: boolean; dataDir: string; personaId: string; allowPrivate?: boolean };
+
+export type PoseItem = { id: string; group: string; name: string; view: string; tier: string; couple?: boolean; en: string; image: string; depth: string };
+
 export type SceneOptions = {
   root?: string;
   schedule?: ScheduleSource;
   wardrobe?: WardrobeSource;
+  pose?: PoseSource;
   sceneDetails?: string[];
   defaultOutfit?: string;
   selfieFallbackScene?: string;
@@ -145,6 +151,119 @@ export function readWardrobeOutfit(
     name: text(item.name, 200),
     tier: text(item.tier || item.rating, 40),
   };
+}
+
+const poseCatalogs = new Map<string, { mtime: number; items: any[] }>();
+
+/** 姿势目录：data/catalog.json（用户导入）优先，其次 ../assets/catalog.json（随包）。 */
+function poseCatalogOf(dir: string): any[] {
+  for (const file of [join(dir, 'catalog.json'), join(dir, '..', 'assets', 'catalog.json')]) {
+    if (!existsSync(file)) continue;
+    try {
+      const mtime = statSync(file).mtimeMs;
+      const cached = poseCatalogs.get(file);
+      if (cached && cached.mtime === mtime) return cached.items;
+      const body = JSON.parse(readFileSync(file, 'utf8'));
+      const items = Array.isArray(body?.items) ? body.items : [];
+      poseCatalogs.set(file, { mtime, items });
+      return items;
+    } catch {
+      continue;
+    }
+  }
+  return [];
+}
+
+function poseAdvancedOf(dir: string): boolean {
+  try {
+    const config = readJson(join(dir, 'config.json'));
+    return config?.advanced === true;
+  } catch {
+    return false;
+  }
+}
+
+/** 双人开关：必须在 private 闸门（高级 + 成年 + allowPrivate）之上再开。 */
+function poseCoupleAllowed(dir: string, personaId?: string): boolean {
+  if (!posePrivateAllowed(dir, personaId)) return false;
+  try {
+    const config = readJson(join(dir, 'config.json'));
+    return config?.couple === true;
+  } catch {
+    return false;
+  }
+}
+function posePrivateAllowed(dir: string, personaId?: string): boolean {
+  if (!poseAdvancedOf(dir)) return false;
+  let config: any = {};
+  try {
+    config = readJson(join(dir, 'config.json')) ?? {};
+  } catch {
+    return false;
+  }
+  const thresholdRaw = Number(config.adultThreshold);
+  const threshold = Number.isFinite(thresholdRaw) ? Math.max(18, thresholdRaw) : 18;
+  const id = text(personaId, 120);
+  const policy = id && config.personaPolicy ? config.personaPolicy[id] : undefined;
+  if (policy === 'minor') return false;
+  const host = readJson(join(PLUGINS_ROOT, '..', 'config', 'config.json'));
+  const file = text(host?.personas?.[id]?.file, 400);
+  let age: number | null = null;
+  if (file) {
+    const path = isAbsolute(file) ? file : join(PLUGINS_ROOT, '..', file);
+    if (existsSync(path)) {
+      try {
+        const raw = readFileSync(path, 'utf8').slice(0, 6000);
+        const ages = [...raw.matchAll(/(\d{1,3})\s*岁/g)]
+          .map((m) => Number(m[1]))
+          .filter((n) => Number.isFinite(n) && n >= 1 && n <= 120);
+        if (ages.length) age = Math.min(...ages);
+      } catch {
+        age = null;
+      }
+    }
+  }
+  if (policy === 'adult') return age === null || age >= threshold;
+  if (age !== null) return age >= threshold;
+  return config.unknownPersona === 'adult';
+}
+
+function poseItemOf(item: any, allowPrivate: boolean, allowCouple: boolean): PoseItem | null {
+  if (!item) return null;
+  const tier = text(item.tier, 20);
+  // 默认不放 private（性感系）；couple（双人）还要在高级之上再开双人开关。
+  if (tier === 'private' && !allowPrivate) return null;
+  if (tier === 'couple' && !(allowPrivate && allowCouple)) return null;
+  return {
+    id: text(item.id, 60),
+    group: text(item.group, 120),
+    name: text(item.name, 200),
+    view: text(item.view, 20),
+    tier,
+    couple: item.couple === true,
+    en: text(item.en, 300),
+    image: text(item.image, 300),
+    depth: text(item.depth, 300),
+  };
+}
+
+/** pose 参数：完整 id / 组 key / 姿势名或分类关键词。只查姿势库，不读日程状态。 */
+export function findPoseItem(input: string, _date?: string, _blockId?: string, options: SceneOptions = {}): PoseItem | null {
+  const source = options.pose;
+  if (!source?.enabled) return null;
+  const value = text(input, 120);
+  if (!value) return null;
+  const dir = dataDirOf(options.root, source.dataDir);
+  const allowPrivate = source.allowPrivate === true && posePrivateAllowed(dir, source.personaId);
+  const allowCouple = source.allowPrivate === true && poseCoupleAllowed(dir, source.personaId);
+  const items = poseCatalogOf(dir);
+  const exact = items.find((entry: any) => entry?.id === value);
+  if (exact) return poseItemOf(exact, allowPrivate, allowCouple);
+  const group = items.find((entry: any) => entry?.group === value && entry?.viewSlug === 'front') ?? items.find((entry: any) => entry?.group === value);
+  if (group) return poseItemOf(group, allowPrivate, allowCouple);
+  const needle = value.toLowerCase();
+  const hit = items.find((entry: any) => `${entry?.name ?? ''} ${entry?.category ?? ''}`.toLowerCase().includes(needle));
+  return poseItemOf(hit, allowPrivate, allowCouple);
 }
 
 const placeEn = (place: string, title: string) => {

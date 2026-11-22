@@ -1,13 +1,15 @@
-/*! 画室 · 提示词词库引擎。
+/*! 提示词小抄 · 通用词库引擎。
  *
+ * 这是一个独立插件：不依赖任何具体宿主，也不认识任何具体宿主的动作名。
  * 词库可选：优先读用户自己的 data/prompts.json；没有就读随包附带的 prompts.sample.json。
  * 两个都没有时引擎照样工作，只是词条为 0，页面提示导入，不抛异常。
- * 「提示词小抄」子插件和画画子插件共用这一份逻辑：父插件用 ctx.provide('promptkit') 暴露，
- * 补词配置仍由子插件自己的 data/config.json 管。
  *
- * NSFW：词库可以带成人分类（id 以 nsfw 开头）。是否可用由配置里的 allowNsfw 决定，默认关闭。
- * 关闭时这些分类不参与 categories / search / pick / recipe；自动补词永远不碰成人分类，
- * 无论开关开没开 —— 补词是无人值守往每张图上加词，不该悄悄加成人内容。
+ * 可配置的部分都在 WordConfig 里：词条字段名、分类语义（负面/质量/成人前缀）、
+ * 配方层、动作白名单、质量词白名单、安全词正则。默认值只描述通用约定，不写具体作品或本机路径。
+ *
+ * NSFW：词库可以带成人分类（分类对象上的 nsfw / adult / role，或 id 命中配置的前缀）。
+ * 是否可用由 allowNsfw 决定，默认关闭；关闭时这些分类不参与 categories / search / pick / recipe。
+ * 自动补词永远不碰成人分类，无论开关开没开。
  *
  * SPDX-License-Identifier: AGPL-3.0-only
  * Additional terms under AGPLv3 Section 7: see LICENSE-ADDITIONAL.
@@ -15,66 +17,84 @@
 import { mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
-export const WORD_KINDS = ['draw', 'selfie', 'snapshot', 'paint'] as const;
-export type WordKind = (typeof WORD_KINDS)[number];
-export const WORD_LANGS = ['zh', 'en', 'both'] as const;
+export const WORD_LANG_MODES = ['primary', 'secondary', 'both'] as const;
+export type WordLangMode = (typeof WORD_LANG_MODES)[number];
 
-/** 成人分类：id 以 nsfw 开头（nsfwbody / nsfwcloth / nsfwact / nsfwplay）。 */
-export const isNsfwCategory = (id: string) => /^nsfw/i.test(String(id ?? ''));
+export type WordFields = {
+  /** 主字段：自动补词、默认语言优先取它 */
+  primary: string;
+  /** 副字段：用来做「正文里出现副字段 → 补主字段」的映射 */
+  secondary: string;
+};
+
+export type WordSemantics = {
+  /** 负面分类 id；留空表示词库没有负面分类 */
+  negative: string;
+  /** 质量分类 id；质量分类可再被 qualityAllowlist 收窄 */
+  quality: string;
+  /** 成人分类 id 前缀；分类上带 nsfw/adult/role 时优先按分类标记判断 */
+  nsfwPrefix: string;
+};
 
 export type WordConfig = {
-  lang: 'zh' | 'en' | 'both';
+  lang: WordLangMode;
   pickCount: number;
   disabledCategories: string[];
   recipeLayers: string[];
+  recipeMaxLayers: number;
   autoEnrich: boolean;
+  /** 动作白名单；'*' 表示所有调用方传来的 kind 都补 */
   enrichKinds: string[];
   enrichLayers: string[];
   enrichCount: number;
-  /** 是否允许查词工具使用 NSFW 分类（默认 false）。自动补词不受它影响，始终不用成人分类。 */
   allowNsfw: boolean;
-  /** 共用的负面提示词：出图时没单独传 negative 就用它（空 = 不覆盖工作流自带的负面）。 */
   negativePrompt: string;
+  fields: WordFields;
+  semantics: WordSemantics;
+  /** 质量分类里只取这些词；空数组表示不额外收窄 */
+  qualityAllowlist: string[];
+  /** 自动补词的安全词正则；每项是一条正则，空数组表示不额外过滤 */
+  blockedPatterns: string[];
 };
 
-const DEFAULT_LAYERS = ['composition', 'lighting', 'pose', 'expression', 'style'];
-const DEFAULT_ENRICH_KINDS = ['draw', 'selfie', 'snapshot', 'paint'];
-const DEFAULT_ENRICH_LAYERS = ['style'];
-
 export const WORD_DEFAULT: WordConfig = {
-  lang: 'en',
+  lang: 'primary',
   pickCount: 3,
-  disabledCategories: ['negative'],
-  recipeLayers: DEFAULT_LAYERS.slice(),
-  autoEnrich: true,
-  enrichKinds: DEFAULT_ENRICH_KINDS.slice(),
-  enrichLayers: DEFAULT_ENRICH_LAYERS.slice(),
+  disabledCategories: [],
+  recipeLayers: [],
+  recipeMaxLayers: 6,
+  autoEnrich: false,
+  enrichKinds: ['*'],
+  enrichLayers: [],
   enrichCount: 2,
   allowNsfw: false,
   negativePrompt: '',
+  fields: { primary: 'en', secondary: 'zh' },
+  semantics: { negative: 'negative', quality: 'quality', nsfwPrefix: 'nsfw' },
+  qualityAllowlist: [],
+  blockedPatterns: ['\\b(explicit|sensitive|nsfw|nude|naked|lingerie|underwear|swimwear|bikini|cleavage)\\b'],
 };
 
-/** style 分类里只取“质量类”词，避免自动补进 anime / watercolor 这类会改画风的词。 */
-const SAFE_STYLE = new Set([
-  'masterpiece',
-  'best quality',
-  'highres',
-  'absurdres',
-  'very aesthetic',
-  'newest',
-  '4k',
-  '8k',
-  'detailed',
-  'intricate details',
-]);
-/** 分级/成人相关词一律不参与自动补词（词库里还留着评级标签，但补词时跳过）。 */
-const UNSAFE = /(explicit|sensitive|nsfw|nude|naked|lingerie|underwear|swimsuit|bikini|cleavage|sex|shower)/i;
+export type WordCategory = {
+  id: string;
+  name: string;
+  icon?: string;
+  count?: number;
+  /** 可选角色：negative / quality / nsfw；也可以在分类上写 nsfw / adult 布尔 */
+  role?: string;
+  nsfw?: boolean;
+  adult?: boolean;
+};
 
-export type WordCategory = { id: string; name: string; icon?: string; count?: number };
-export type WordTag = { cat: string; zh: string; en: string };
+export type WordTag = {
+  cat: string;
+  /** 词条的所有字段；字段名由配置决定，不限定 zh/en */
+  values: Record<string, string>;
+};
 
 type Data = {
   categories: WordCategory[];
+  catById: Map<string, WordCategory>;
   tags: WordTag[];
   builtAt: string;
   byCat: Map<string, WordTag[]>;
@@ -88,10 +108,208 @@ type Data = {
   nsfwTags: number;
 };
 
+export type WordLibrary = {
+  path: string;
+  exists: boolean;
+  sample: boolean;
+  bytes: number;
+  builtAt: string;
+  categories: number;
+  tags: number;
+  nsfwCategories: number;
+  nsfwTags: number;
+  broken: boolean;
+};
+
+const asText = (value: unknown) => (typeof value === 'string' ? value.trim() : '');
+
+/** 分类是否成人分类：分类标记优先，其次按配置的 id 前缀。 */
+export function isNsfwCategory(id: string, semantics: WordSemantics, category?: WordCategory) {
+  if (category?.nsfw === true || category?.adult === true || String(category?.role ?? '').toLowerCase() === 'nsfw') {
+    return true;
+  }
+  const prefix = String(semantics?.nsfwPrefix ?? '').trim().toLowerCase();
+  return Boolean(prefix) && String(id ?? '').toLowerCase().startsWith(prefix);
+}
+
+/** 分类是否负面分类。 */
+export function isNegativeCategory(id: string, semantics: WordSemantics, category?: WordCategory) {
+  return String(category?.role ?? '').toLowerCase() === 'negative' || (Boolean(semantics?.negative) && id === semantics.negative);
+}
+
+/** 分类是否质量分类。 */
+export function isQualityCategory(id: string, semantics: WordSemantics, category?: WordCategory) {
+  return String(category?.role ?? '').toLowerCase() === 'quality' || (Boolean(semantics?.quality) && id === semantics.quality);
+}
+
+function normalizeFields(stored: any): WordFields {
+  const primary = asText(stored?.fields?.primary) || WORD_DEFAULT.fields.primary;
+  const secondary = asText(stored?.fields?.secondary) || WORD_DEFAULT.fields.secondary;
+  return { primary, secondary };
+}
+
+function normalizeSemantics(stored: any): WordSemantics {
+  const value = stored?.semantics ?? {};
+  return {
+    negative: value.negative === '' ? '' : asText(value.negative) || WORD_DEFAULT.semantics.negative,
+    quality: value.quality === '' ? '' : asText(value.quality) || WORD_DEFAULT.semantics.quality,
+    nsfwPrefix: value.nsfwPrefix === '' ? '' : asText(value.nsfwPrefix) || WORD_DEFAULT.semantics.nsfwPrefix,
+  };
+}
+
+function normalizeLang(stored: any, fields: WordFields): WordLangMode {
+  const value = asText(stored);
+  if ((WORD_LANG_MODES as readonly string[]).includes(value)) return value as WordLangMode;
+  if (value && value === fields.primary) return 'primary';
+  if (value && value === fields.secondary) return 'secondary';
+  // 兼容旧配置：en 当主字段、zh 当副字段。
+  if (value === 'en') return 'primary';
+  if (value === 'zh') return 'secondary';
+  return WORD_DEFAULT.lang;
+}
+
+function list(value: unknown): string[] {
+  return Array.isArray(value) ? value.map((item) => String(item).trim()).filter(Boolean) : [];
+}
+
+export function normalizeWordConfig(stored: any, categories: WordCategory[]): WordConfig {
+  const fields = normalizeFields(stored);
+  const semantics = normalizeSemantics(stored);
+  const known = new Set(categories.map((c) => c.id));
+  const byId = new Map(categories.map((c) => [c.id, c]));
+  const disabled = Array.isArray(stored?.disabledCategories)
+    ? list(stored.disabledCategories).filter((id) => known.has(id))
+    : WORD_DEFAULT.disabledCategories.slice();
+  const recipeLayers = Array.isArray(stored?.recipeLayers)
+    ? list(stored.recipeLayers).filter((id) => known.has(id) && !isNegativeCategory(id, semantics, byId.get(id)) && !isNsfwCategory(id, semantics, byId.get(id)))
+    : WORD_DEFAULT.recipeLayers.slice();
+  const recipeMaxLayers = Math.min(20, Math.max(1, Number(stored?.recipeMaxLayers) || WORD_DEFAULT.recipeMaxLayers));
+  const autoEnrich = typeof stored?.autoEnrich === 'boolean' ? stored.autoEnrich : WORD_DEFAULT.autoEnrich;
+  const enrichKinds = Array.isArray(stored?.enrichKinds)
+    ? list(stored.enrichKinds).filter((id) => id === '*' || id.length <= 40)
+    : WORD_DEFAULT.enrichKinds.slice();
+  const enrichLayers = Array.isArray(stored?.enrichLayers)
+    ? list(stored.enrichLayers).filter((id) => known.has(id) && !isNegativeCategory(id, semantics, byId.get(id)) && !isNsfwCategory(id, semantics, byId.get(id)))
+    : WORD_DEFAULT.enrichLayers.slice();
+  const enrichCount = Math.min(5, Math.max(1, Number(stored?.enrichCount) || WORD_DEFAULT.enrichCount));
+  const allowNsfw = stored?.allowNsfw === true;
+  const negativePrompt = typeof stored?.negativePrompt === 'string' ? stored.negativePrompt.slice(0, 4000) : '';
+  const qualityAllowlist = Array.isArray(stored?.qualityAllowlist)
+    ? list(stored.qualityAllowlist).map((word) => word.toLowerCase()).slice(0, 200)
+    : WORD_DEFAULT.qualityAllowlist.slice();
+  const blockedPatterns = Array.isArray(stored?.blockedPatterns)
+    ? list(stored.blockedPatterns).slice(0, 30)
+    : WORD_DEFAULT.blockedPatterns.slice();
+  return {
+    lang: normalizeLang(stored?.lang, fields),
+    pickCount: Math.min(8, Math.max(1, Number(stored?.pickCount) || WORD_DEFAULT.pickCount)),
+    disabledCategories: disabled,
+    recipeLayers,
+    recipeMaxLayers,
+    autoEnrich,
+    enrichKinds,
+    enrichLayers,
+    enrichCount,
+    allowNsfw,
+    negativePrompt,
+    fields,
+    semantics,
+    qualityAllowlist,
+    blockedPatterns,
+  };
+}
+
+/** 读取词条上的一个字段；字段名不限定。 */
+function fieldOf(tag: WordTag, key: string) {
+  return asText(tag?.values?.[key]);
+}
+
+/** 主文本：优先配置的主字段，其次常见别名，最后取第一个非空字段。 */
+function primaryOf(tag: WordTag, fields: WordFields) {
+  return (
+    fieldOf(tag, fields.primary) ||
+    fieldOf(tag, 'prompt') ||
+    fieldOf(tag, 'text') ||
+    fieldOf(tag, 'en') ||
+    Object.values(tag?.values ?? {}).find(Boolean) ||
+    ''
+  );
+}
+
+/** 副文本：优先配置的副字段，其次常见别名，最后取与主文本不同的第一个字段。 */
+function secondaryOf(tag: WordTag, fields: WordFields) {
+  const primary = primaryOf(tag, fields);
+  return (
+    fieldOf(tag, fields.secondary) ||
+    fieldOf(tag, 'zh') ||
+    fieldOf(tag, 'translation') ||
+    fieldOf(tag, 'cn') ||
+    Object.values(tag?.values ?? {}).find((value) => value && value !== primary) ||
+    ''
+  );
+}
+
+function textOf(tag: WordTag, lang: string, fields: WordFields) {
+  if (lang && lang !== 'primary' && lang !== 'secondary' && lang !== 'both' && tag?.values?.[lang]) {
+    return tag.values[lang];
+  }
+  const primary = primaryOf(tag, fields);
+  const secondary = secondaryOf(tag, fields);
+  if (lang === 'secondary') return secondary || primary;
+  if (lang === 'both') return primary && secondary ? `${primary} / ${secondary}` : primary || secondary;
+  return primary || secondary;
+}
+
+function sample<T>(arr: T[], n: number) {
+  const pool = arr.slice();
+  const out: T[] = [];
+  while (pool.length && out.length < n) {
+    out.push(pool.splice(Math.floor(Math.random() * pool.length), 1)[0]);
+  }
+  return out;
+}
+
+/** 任一字段已经出现在正文里，就不再补。 */
+function tagPresent(hay: string, tag: WordTag) {
+  return Object.values(tag?.values ?? {})
+    .map((value) => asText(value).toLowerCase())
+    .filter((value) => value.length >= 2)
+    .some((value) => hay.includes(value));
+}
+
+function compilePatterns(patterns: string[]) {
+  const out: RegExp[] = [];
+  for (const pattern of patterns) {
+    try {
+      out.push(new RegExp(pattern, 'i'));
+    } catch {
+      /* 配置里写了坏正则，跳过它，不让整个词库崩掉 */
+    }
+  }
+  return out;
+}
+
+/** 能参与自动补词的词条：非负面、非成人、不命中安全正则、质量分类按白名单收窄。 */
+function usable(tag: WordTag, cfg: WordConfig, data: Data, blocked: RegExp[]) {
+  const category = data.catById.get(tag.cat);
+  if (!primaryOf(tag, cfg.fields) && !secondaryOf(tag, cfg.fields)) return false;
+  if (isNegativeCategory(tag.cat, cfg.semantics, category)) return false;
+  if (isNsfwCategory(tag.cat, cfg.semantics, category)) return false;
+  const text = [primaryOf(tag, cfg.fields), secondaryOf(tag, cfg.fields), ...Object.values(tag.values)].join(' ');
+  if (blocked.some((re) => re.test(text))) return false;
+  if (isQualityCategory(tag.cat, cfg.semantics, category) && cfg.qualityAllowlist.length) {
+    const primary = primaryOf(tag, cfg.fields).toLowerCase();
+    const secondary = secondaryOf(tag, cfg.fields).toLowerCase();
+    if (!cfg.qualityAllowlist.includes(primary) && !cfg.qualityAllowlist.includes(secondary)) return false;
+  }
+  return true;
+}
+
 /** 一份都没有时的空词库（页面能打开，工具给导入说明）。 */
 function parseEmpty(path: string, broken = false): Data {
   return {
     categories: [],
+    catById: new Map(),
     tags: [],
     builtAt: '',
     byCat: new Map(),
@@ -104,98 +322,79 @@ function parseEmpty(path: string, broken = false): Data {
   };
 }
 
-/** 当前词库从哪儿来：自己的文件、随包示例，或两者都没有。 */
-export type WordLibrary = {
-  path: string;
-  exists: boolean;
-  sample: boolean;
-  bytes: number;
-  builtAt: string;
-  categories: number;
-  tags: number;
-  /** 词库里的成人分类数 / 词条数；是否能用由 allowNsfw 决定 */
-  nsfwCategories: number;
-  nsfwTags: number;
-  /** 用户自己的词库存在但读不出来（JSON 坏了 / 没有词条），已回退到示例 */
-  broken: boolean;
-};
+/** 导入时把任意字段的字符串值收进 values；分类字段单独处理。 */
+function tagValues(raw: any): Record<string, string> {
+  const values: Record<string, string> = {};
+  for (const [key, value] of Object.entries(raw ?? {})) {
+    if (key === 'cat' || key === 'category' || key === 'id') continue;
+    if (typeof value === 'string' && value.trim()) values[key] = value.trim();
+  }
+  return values;
+}
 
-export function normalizeWordConfig(stored: any, categories: WordCategory[]): WordConfig {
-  const known = new Set(categories.map((c) => c.id));
-  const lang = WORD_LANGS.includes(stored?.lang) ? stored.lang : WORD_DEFAULT.lang;
-  const pickCount = Math.min(8, Math.max(1, Number(stored?.pickCount) || WORD_DEFAULT.pickCount));
-  const disabled = Array.isArray(stored?.disabledCategories)
-    ? stored.disabledCategories.map(String).filter((id: string) => known.has(id))
-    : WORD_DEFAULT.disabledCategories.slice();
-  const layers = Array.isArray(stored?.recipeLayers)
-    ? stored.recipeLayers.map(String).filter((id: string) => known.has(id))
-    : WORD_DEFAULT.recipeLayers.slice();
-  const autoEnrich = typeof stored?.autoEnrich === 'boolean' ? stored.autoEnrich : WORD_DEFAULT.autoEnrich;
-  const enrichKinds = Array.isArray(stored?.enrichKinds)
-    ? stored.enrichKinds.map(String).filter((id: string) => WORD_KINDS.includes(id as WordKind))
-    : WORD_DEFAULT.enrichKinds.slice();
-  const enrichLayers = Array.isArray(stored?.enrichLayers)
-    ? stored.enrichLayers
-        .map(String)
-        .filter((id: string) => known.has(id) && id !== 'negative' && !isNsfwCategory(id))
-    : WORD_DEFAULT.enrichLayers.slice();
-  const enrichCount = Math.min(5, Math.max(1, Number(stored?.enrichCount) || WORD_DEFAULT.enrichCount));
-  const allowNsfw = stored?.allowNsfw === true;
-  const negativePrompt = typeof stored?.negativePrompt === 'string' ? stored.negativePrompt.slice(0, 4000) : '';
+function parseCategory(raw: any): WordCategory | null {
+  if (!raw || typeof raw.id !== 'string' || !raw.id) return null;
+  const category: WordCategory = { id: String(raw.id), name: String(raw.name ?? raw.id) };
+  if (typeof raw.icon === 'string' && raw.icon) category.icon = raw.icon;
+  const count = Number(raw.count);
+  if (Number.isFinite(count) && count > 0) category.count = Math.round(count);
+  if (typeof raw.role === 'string' && raw.role) category.role = raw.role;
+  if (raw.nsfw === true) category.nsfw = true;
+  if (raw.adult === true) category.adult = true;
+  return category;
+}
+
+function parse(path: string, sample: boolean, bytes: number, semantics: WordSemantics): Data | null {
+  let raw: any = {};
+  try {
+    raw = JSON.parse(readFileSync(path, 'utf8'));
+  } catch {
+    return null;
+  }
+  // 兼容两种常见写法：本插件的 categories，以及上游数据的 cats。
+  const rawCats = Array.isArray(raw.categories) ? raw.categories : Array.isArray(raw.cats) ? raw.cats : [];
+  const categories = rawCats.map(parseCategory).filter(Boolean) as WordCategory[];
+  const tags: WordTag[] = [];
+  for (const item of Array.isArray(raw.tags) ? raw.tags : []) {
+    if (!item || typeof item !== 'object') continue;
+    const cat = String(item.cat ?? item.category ?? '');
+    const values = tagValues(item);
+    if (!cat || !categories.some((c) => c.id === cat) || !Object.keys(values).length) continue;
+    tags.push({ cat, values });
+  }
+  if (!tags.length) return null;
+  const catById = new Map(categories.map((c) => [c.id, c]));
+  const byCat = new Map<string, WordTag[]>();
+  for (const tag of tags) {
+    if (!byCat.has(tag.cat)) byCat.set(tag.cat, []);
+    byCat.get(tag.cat)!.push(tag);
+  }
   return {
-    lang,
-    pickCount,
-    disabledCategories: disabled,
-    recipeLayers: layers,
-    autoEnrich,
-    enrichKinds,
-    enrichLayers,
-    enrichCount,
-    allowNsfw,
-    negativePrompt,
+    categories,
+    catById,
+    tags,
+    builtAt: String(raw.builtAt ?? raw.generatedAt ?? ''),
+    byCat,
+    path,
+    sample,
+    bytes,
+    broken: false,
+    nsfwCategories: categories.filter((c) => isNsfwCategory(c.id, semantics, c)).length,
+    nsfwTags: tags.filter((t) => isNsfwCategory(t.cat, semantics, catById.get(t.cat))).length,
   };
 }
 
-function textOf(tag: WordTag, lang: string) {
-  const zh = String(tag?.zh ?? '').trim();
-  const en = String(tag?.en ?? '').trim();
-  if (lang === 'zh') return zh || en;
-  if (lang === 'en') return en || zh;
-  return zh && en ? zh + ' / ' + en : zh || en;
-}
+export type WordEngineOptions = {
+  file: string;
+  sample?: string;
+  readConfig: () => Promise<any>;
+};
 
-function sample<T>(arr: T[], n: number) {
-  const pool = arr.slice();
-  const out: T[] = [];
-  while (pool.length && out.length < n) {
-    out.push(pool.splice(Math.floor(Math.random() * pool.length), 1)[0]);
-  }
-  return out;
-}
-
-/** 词条的中文或英文任一个已经出现在正文里，就不再补。 */
-function tagPresent(hay: string, tag: WordTag) {
-  const parts = [tag?.zh, tag?.en]
-    .map((value) => String(value ?? '').trim().toLowerCase())
-    .filter((value) => value.length >= 2);
-  return parts.some((part) => hay.includes(part));
-}
-
-/** 能参与自动补词的词条：质量层只留 SAFE_STYLE，成人分类和分级词一律跳过。 */
-function usable(tag: WordTag, layer?: string) {
-  const zh = String(tag?.zh ?? '').trim();
-  const en = String(tag?.en ?? '').trim().toLowerCase();
-  if (!zh && !en) return false;
-  if (isNsfwCategory(tag.cat)) return false;
-  if (UNSAFE.test(zh) || UNSAFE.test(en)) return false;
-  if (layer === 'style' && !SAFE_STYLE.has(en)) return false;
-  return true;
-}
-
-export function createWordEngine(options: { file: string; sample?: string; readConfig: () => Promise<any> }) {
+export function createWordEngine(options: WordEngineOptions) {
   let cache: Data | null = null;
   /** 用户词库坏了并回退到示例 */
   let broken = false;
+  let lastSemantics: WordSemantics = WORD_DEFAULT.semantics;
 
   /** 依次试：用户自己的词库 → 随包示例。只返回真实存在的文件。 */
   const candidates = (): Array<{ path: string; sample: boolean; bytes: number }> => {
@@ -213,49 +412,27 @@ export function createWordEngine(options: { file: string; sample?: string; readC
     return out;
   };
 
-  const parse = (path: string, sample: boolean, bytes: number): Data | null => {
-    let raw: any = {};
+  const cfgOf = async () => {
+    let stored: any = null;
     try {
-      raw = JSON.parse(readFileSync(path, 'utf8'));
+      stored = await options.readConfig();
     } catch {
-      return null;
+      stored = null;
     }
-    // 兼容两种写法：引擎自己的 categories，以及 PromptForge 源数据的 cats。
-    // 用户直接把自己那份源数据丢进 data/ 也能读，不用先跑脚本转格式。
-    const rawCats = Array.isArray(raw.categories) ? raw.categories : Array.isArray(raw.cats) ? raw.cats : [];
-    const categories: WordCategory[] = rawCats
-      .filter((c: any) => c && typeof c.id === 'string' && c.id)
-      .map((c: any) => ({ id: String(c.id), name: String(c.name ?? c.id) }));
-    const tags: WordTag[] = (Array.isArray(raw.tags) ? raw.tags : []).filter(
-      (t: any) => t && categories.some((c) => c.id === t.cat) && (String(t.zh ?? '').trim() || String(t.en ?? '').trim()),
-    );
-    if (!tags.length) return null;
-    const byCat = new Map<string, WordTag[]>();
-    for (const tag of tags) {
-      if (!byCat.has(tag.cat)) byCat.set(tag.cat, []);
-      byCat.get(tag.cat)!.push(tag);
-    }
-    return {
-      categories,
-      tags,
-      builtAt: String(raw.builtAt ?? raw.generatedAt ?? ''),
-      byCat,
-      path,
-      sample,
-      bytes,
-      broken,
-      nsfwCategories: categories.filter((c) => isNsfwCategory(c.id)).length,
-      nsfwTags: tags.filter((t) => isNsfwCategory(t.cat)).length,
-    };
+    const semantics = normalizeSemantics(stored);
+    lastSemantics = semantics;
+    const categories = load(semantics).categories;
+    return normalizeWordConfig(stored, categories);
   };
 
-  const load = (): Data => {
+  const load = (semantics: WordSemantics = lastSemantics): Data => {
     if (!cache) {
       broken = false;
       const list = candidates();
       for (const item of list) {
-        const data = parse(item.path, item.sample, item.bytes);
+        const data = parse(item.path, item.sample, item.bytes, semantics);
         if (data) {
+          if (item.sample && broken) data.broken = true;
           cache = data;
           break;
         }
@@ -263,14 +440,15 @@ export function createWordEngine(options: { file: string; sample?: string; readC
       }
       if (!cache) {
         broken = list.some((item) => !item.sample);
-        cache = parseEmpty(join(options.file), broken);
+        cache = parseEmpty(options.file, broken);
       }
     }
     return cache;
   };
 
   const library = async (): Promise<WordLibrary> => {
-    const data = load();
+    const cfg = await cfgOf();
+    const data = load(cfg.semantics);
     return {
       path: data.path,
       exists: data.bytes > 0,
@@ -285,35 +463,36 @@ export function createWordEngine(options: { file: string; sample?: string; readC
     };
   };
 
-  const cfgOf = async () => {
-    let stored: any = null;
-    try {
-      stored = await options.readConfig();
-    } catch {
-      stored = null;
-    }
-    return normalizeWordConfig(stored, load().categories);
+  const flags = (id: string, cfg: WordConfig, data: Data) => {
+    const category = data.catById.get(id);
+    return {
+      nsfw: isNsfwCategory(id, cfg.semantics, category),
+      negative: isNegativeCategory(id, cfg.semantics, category),
+      quality: isQualityCategory(id, cfg.semantics, category),
+    };
   };
 
-  /** 工具能用到的分类：配置里没被禁用、（成人分类）开关开着、且不是「负面」。
-   * 负面词不参与查词/挑词/配方，单独在设置页的「负面提示词」里维护成共用负面。 */
-  const enabledList = (cfg: WordConfig) => {
+  /** 工具能用到的分类：配置里没被禁用、成人开关开着、且不是负面。 */
+  const enabledList = (cfg: WordConfig, data = load()) => {
     const off = new Set(cfg.disabledCategories);
-    return load().categories.filter(
-      (c) => !off.has(c.id) && c.id !== 'negative' && (cfg.allowNsfw || !isNsfwCategory(c.id)),
-    );
+    return data.categories.filter((c) => {
+      if (off.has(c.id)) return false;
+      const role = flags(c.id, cfg, data);
+      if (role.negative) return false;
+      return cfg.allowNsfw || !role.nsfw;
+    });
   };
 
-  /** 请求某个分类但拿不到时，说清楚是「被设置关了」「成人分类开关没开」还是「负面词单独管」。 */
-  const unavailableReason = (cat: string, cfg: WordConfig) => {
-    if (cat === 'negative') return '负面词不参与查词和挑词：它们统一放在设置页的「负面提示词」里编辑。';
-    if (isNsfwCategory(cat) && !cfg.allowNsfw) return '这是成人（NSFW）分类，开关没开；设置页 →「NSFW 分类」里可以打开：' + cat;
+  const unavailableReason = (cat: string, cfg: WordConfig, data = load()) => {
+    const role = flags(cat, cfg, data);
+    if (role.negative) return '负面词不参与查词和挑词：请在设置页的「共用负面提示词」里编辑。';
+    if (role.nsfw && !cfg.allowNsfw) return '这是成人分类，开关没开；设置页 →「进阶」里可以打开：' + cat;
     return '这个分类在设置里关掉了：' + cat;
   };
 
   const stats = (cfg: WordConfig) => {
     const data = load();
-    const enabled = enabledList(cfg);
+    const enabled = enabledList(cfg, data);
     return {
       categories: data.categories.length,
       enabledCategories: enabled.length,
@@ -333,19 +512,19 @@ export function createWordEngine(options: { file: string; sample?: string; readC
   const categories = async () => {
     const cfg = await cfgOf();
     const data = load();
-    return enabledList(cfg).map((c) => ({ id: c.id, name: c.name, count: (data.byCat.get(c.id) ?? []).length }));
+    return enabledList(cfg, data).map((c) => ({ id: c.id, name: c.name, count: (data.byCat.get(c.id) ?? []).length }));
   };
 
-  /** 词库「负面」分类的全部词，按英文拼成一句：设置页的「填入词库里的全部负面词」用它。 */
+  /** 词库负面分类的全部词：设置页的「填入词库里的全部负面词」用它。 */
   const negativeLibraryText = async () => {
+    const cfg = await cfgOf();
     const data = load();
-    return (data.byCat.get('negative') ?? [])
-      .map((tag) => String(tag.en ?? '').trim() || String(tag.zh ?? '').trim())
+    return (data.byCat.get(cfg.semantics.negative) ?? [])
+      .map((tag) => primaryOf(tag, cfg.fields) || secondaryOf(tag, cfg.fields))
       .filter(Boolean)
       .join(', ');
   };
 
-  /** 当前生效的共用负面提示词；空字符串表示不覆盖工作流自带的负面。 */
   const negativePrompt = async () => {
     const cfg = await cfgOf();
     return String(cfg.negativePrompt ?? '').trim();
@@ -353,21 +532,31 @@ export function createWordEngine(options: { file: string; sample?: string; readC
 
   const search = async (args: any) => {
     const cfg = await cfgOf();
+    const data = load();
     const q = String(args?.query ?? '').trim().toLowerCase();
     if (!q) return { status: 'error', error: 'query 不能为空' };
-    const enabled = new Set(enabledList(cfg).map((c) => c.id));
+    const enabled = new Set(enabledList(cfg, data).map((c) => c.id));
     const cat = args?.category ? String(args.category) : '';
-    if (cat && !enabled.has(cat)) return { status: 'error', error: unavailableReason(cat, cfg) };
+    if (cat && !enabled.has(cat)) return { status: 'error', error: unavailableReason(cat, cfg, data) };
     const limit = Math.min(20, Math.max(1, Number(args?.limit) || 8));
-    const lang = WORD_LANGS.includes(args?.lang) ? args.lang : cfg.lang;
+    const lang = normalizeLang(args?.lang, cfg.fields);
     const hits: any[] = [];
-    for (const tag of load().tags) {
+    for (const tag of data.tags) {
       if (!enabled.has(tag.cat)) continue;
       if (cat && tag.cat !== cat) continue;
-      const zh = String(tag.zh ?? '').toLowerCase();
-      const en = String(tag.en ?? '').toLowerCase();
-      if (zh.includes(q) || en.includes(q)) {
-        hits.push({ cat: tag.cat, zh: tag.zh, en: tag.en, text: textOf(tag, lang) });
+      const matched = Object.values(tag.values).some((value) => value.toLowerCase().includes(q));
+      if (matched) {
+        const primary = primaryOf(tag, cfg.fields);
+        const secondary = secondaryOf(tag, cfg.fields);
+        hits.push({
+          cat: tag.cat,
+          text: textOf(tag, lang, cfg.fields),
+          primary,
+          secondary,
+          values: tag.values,
+          en: primary,
+          zh: secondary,
+        });
         if (hits.length >= limit) break;
       }
     }
@@ -376,52 +565,62 @@ export function createWordEngine(options: { file: string; sample?: string; readC
 
   const pick = async (args: any) => {
     const cfg = await cfgOf();
-    const enabled = enabledList(cfg);
-    const count = Math.min(8, Math.max(1, Number(args?.count) || cfg.pickCount));
-    const lang = WORD_LANGS.includes(args?.lang) ? args.lang : cfg.lang;
-    const cat = args?.category ? String(args.category) : '';
     const data = load();
-    if (cat === 'negative') {
-      return { status: 'error', error: '负面词不参与随机挑词：挑出来只能当正面的画面描述，写负面提示词请用 prompt_search。' };
+    const enabled = enabledList(cfg, data);
+    const count = Math.min(8, Math.max(1, Number(args?.count) || cfg.pickCount));
+    const lang = normalizeLang(args?.lang, cfg.fields);
+    const cat = args?.category ? String(args.category) : '';
+    if (cat && flags(cat, cfg, data).negative) {
+      return { status: 'error', error: '负面词不参与随机挑词：请用设置页的「共用负面提示词」维护。' };
     }
-    // 负面分类就算在设置里勾上了，也只给 search 用，不进随机挑词的池子。
-    const pickable = enabled.filter((c) => c.id !== 'negative');
+    const pickable = enabled.filter((c) => !flags(c.id, cfg, data).negative);
     let pool: WordTag[] = [];
     if (cat) {
-      if (!pickable.some((c) => c.id === cat)) return { status: 'error', error: unavailableReason(cat, cfg) };
+      if (!pickable.some((c) => c.id === cat)) return { status: 'error', error: unavailableReason(cat, cfg, data) };
       pool = data.byCat.get(cat) ?? [];
     } else {
       for (const c of pickable) pool = pool.concat(data.byCat.get(c.id) ?? []);
     }
     if (!pool.length) return { status: 'error', error: '没有可用的词' };
     const picked = sample(pool, count);
-    const texts = picked.map((tag) => textOf(tag, lang)).filter(Boolean);
+    const texts = picked.map((tag) => textOf(tag, lang, cfg.fields)).filter(Boolean);
     return {
       status: 'ok',
       category: cat || 'all',
-      tags: picked.map((tag) => ({ cat: tag.cat, zh: tag.zh, en: tag.en, text: textOf(tag, lang) })),
+      tags: picked.map((tag) => {
+        const primary = primaryOf(tag, cfg.fields);
+        const secondary = secondaryOf(tag, cfg.fields);
+        return {
+          cat: tag.cat,
+          text: textOf(tag, lang, cfg.fields),
+          primary,
+          secondary,
+          values: tag.values,
+          en: primary,
+          zh: secondary,
+        };
+      }),
       text: texts.join(', '),
     };
   };
 
   const recipe = async (args: any) => {
     const cfg = await cfgOf();
-    const enabled = new Set(enabledList(cfg).map((c) => c.id));
-    const lang = WORD_LANGS.includes(args?.lang) ? args.lang : cfg.lang;
-    // 负面词不进配方：拼出来是正面描述，混进 low quality 之类的词只会互相打架。
     const data = load();
-    const known = new Set(data.categories.map((c) => c.id));
+    const enabled = new Set(enabledList(cfg, data).map((c) => c.id));
+    const lang = normalizeLang(args?.lang, cfg.fields);
     const requested: string[] | null = Array.isArray(args?.layers) ? args.layers.map(String) : null;
-    let layersList: string[] = (requested ?? cfg.recipeLayers).filter((id: string) => known.has(id) && enabled.has(id) && id !== 'negative');
-    if (!layersList.length) {
-      layersList = (requested ?? DEFAULT_LAYERS).filter((id: string) => known.has(id) && enabled.has(id));
-    }
+    const base = (requested ?? cfg.recipeLayers).filter((id: string) => enabled.has(id) && !flags(id, cfg, data).negative && !flags(id, cfg, data).nsfw);
+    const fallback = enabledList(cfg, data)
+      .filter((c) => !flags(c.id, cfg, data).negative)
+      .map((c) => c.id);
+    const layersList = (base.length ? base : fallback).slice(0, cfg.recipeMaxLayers);
     const words: string[] = [];
     const layersOut: any[] = [];
     for (const cat of layersList) {
       const pool = data.byCat.get(cat);
       if (!pool?.length) continue;
-      const picked = sample(pool, 1).map((tag) => textOf(tag, lang)).filter(Boolean);
+      const picked = sample(pool, 1).map((tag) => textOf(tag, lang, cfg.fields)).filter(Boolean);
       if (!picked.length) continue;
       words.push(...picked);
       layersOut.push({ category: cat, words: picked });
@@ -431,35 +630,35 @@ export function createWordEngine(options: { file: string; sample?: string; readC
     return { status: 'ok', text: words.join(', '), layers: layersOut };
   };
 
-  /** 生图自动补词：先把正文里的中文换成词库英文，再从勾选的层补词；已有的词跳过。 */
+  /** 自动补词：先把正文里的副字段换成主字段，再从勾选的层补词；已有的词跳过。 */
   const enrich = async (input: any) => {
     const cfg = await cfgOf();
+    const data = load();
     const text = String(input?.text ?? '').trim();
-    const kind = String(input?.kind ?? 'draw');
+    const kind = String(input?.kind ?? '').trim();
     const stop = (skipped: string) => ({ text, added: [] as Array<{ cat: string; word: string; why: string }>, skipped });
     if (!text) return stop('empty');
     if (!cfg.autoEnrich) return stop('off');
-    if (!cfg.enrichKinds.includes(kind)) return stop('kind');
+    if (!cfg.enrichKinds.includes('*') && !cfg.enrichKinds.includes(kind)) return stop('kind');
     if (input?.signal?.aborted) return stop('aborted');
-    const enabled = new Set(enabledList(cfg).map((c) => c.id));
-    const layers = cfg.enrichLayers.filter((id) => enabled.has(id) && id !== 'negative');
+    const enabled = new Set(enabledList(cfg, data).map((c) => c.id));
+    const layers = cfg.enrichLayers.filter((id) => enabled.has(id) && !flags(id, cfg, data).negative && !flags(id, cfg, data).nsfw);
     if (!layers.length) return stop('layers');
-    const data = load();
+    const blocked = compilePatterns(cfg.blockedPatterns);
     const hay = text.toLowerCase();
     const added: Array<{ cat: string; word: string; why: string }> = [];
     const words: string[] = [];
 
-    // 1) 正文里写了中文、词库有对应英文的，补英文（画图模型对英文更跟得住）。
+    // 1) 正文里写了副字段、词库有对应主字段的，补主字段（生成模型对主字段更跟得住）。
     for (const tag of data.tags) {
       if (words.length >= cfg.enrichCount) break;
       if (input?.signal?.aborted) return stop('aborted');
-      if (!enabled.has(tag.cat) || tag.cat === 'negative') continue;
-      if (!usable(tag, tag.cat)) continue;
-      const zh = String(tag.zh ?? '').trim();
-      const en = String(tag.en ?? '').trim();
-      if (zh.length >= 2 && en && hay.includes(zh.toLowerCase()) && !hay.includes(en.toLowerCase()) && !words.includes(en)) {
-        words.push(en);
-        added.push({ cat: tag.cat, word: en, why: '中文→英文' });
+      if (!enabled.has(tag.cat) || !usable(tag, cfg, data, blocked)) continue;
+      const primary = fieldOf(tag, cfg.fields.primary) || fieldOf(tag, 'prompt') || fieldOf(tag, 'text') || fieldOf(tag, 'en');
+      const secondary = fieldOf(tag, cfg.fields.secondary) || fieldOf(tag, 'zh') || fieldOf(tag, 'translation') || fieldOf(tag, 'cn');
+      if (secondary.length >= 2 && primary && hay.includes(secondary.toLowerCase()) && !hay.includes(primary.toLowerCase()) && !words.includes(primary)) {
+        words.push(primary);
+        added.push({ cat: tag.cat, word: primary, why: '副字段→主字段' });
       }
     }
 
@@ -469,13 +668,13 @@ export function createWordEngine(options: { file: string; sample?: string; readC
         if (words.length >= cfg.enrichCount) break;
         if (input?.signal?.aborted) return stop('aborted');
         const pool = (data.byCat.get(layer) ?? []).filter((tag) => {
-          if (!usable(tag, layer)) return false;
-          const word = textOf(tag, cfg.lang);
+          if (!usable(tag, cfg, data, blocked)) return false;
+          const word = primaryOf(tag, cfg.fields);
           return Boolean(word) && !words.includes(word) && !tagPresent(hay, tag);
         });
         if (!pool.length) continue;
         const picked = pool[Math.floor(Math.random() * pool.length)];
-        const word = textOf(picked, cfg.lang);
+        const word = primaryOf(picked, cfg.fields);
         words.push(word);
         added.push({ cat: layer, word, why: '按层补词' });
       }
@@ -495,15 +694,14 @@ export function createWordEngine(options: { file: string; sample?: string; readC
         id: c.id,
         name: c.name,
         count: (data.byCat.get(c.id) ?? []).length,
-        /** 页面据此把成人分类和普通分类分开显示、并跟着开关上锁 */
-        nsfw: isNsfwCategory(c.id),
+        ...flags(c.id, cfg, data),
       })),
       builtAt: data.builtAt,
       library: await library(),
       negative: {
         text: cfg.negativePrompt,
         defaultText: await negativeLibraryText(),
-        count: (data.byCat.get('negative') ?? []).length,
+        count: (data.byCat.get(cfg.semantics.negative) ?? []).length,
       },
     };
   };
@@ -519,27 +717,21 @@ export function createWordEngine(options: { file: string; sample?: string; readC
     } catch {
       throw Error('不是合法的 JSON');
     }
-    // 和 parse 一样兼容 PromptForge 源数据的 cats 写法，免得用户还得先跑脚本转格式。
     const rawCats = Array.isArray(parsed?.categories) ? parsed.categories : Array.isArray(parsed?.cats) ? parsed.cats : null;
     if (!rawCats || !rawCats.length) throw Error('缺少 categories 数组');
     if (!Array.isArray(parsed?.tags) || !parsed.tags.length) throw Error('缺少 tags 数组');
-    const categories: WordCategory[] = rawCats
-      .filter((c: any) => c && typeof c.id === 'string' && c.id)
-      .map((c: any) => {
-        // 分类上的 icon / count 不影响查词，但没必要在导入时丢掉（源数据里有 icon，例如 🔞）。
-        const out: WordCategory = { id: String(c.id), name: String(c.name ?? c.id) };
-        if (typeof c.icon === 'string' && c.icon) out.icon = c.icon;
-        const count = Number(c.count);
-        if (Number.isFinite(count) && count > 0) out.count = Math.round(count);
-        return out;
-      });
+    const categories = rawCats.map(parseCategory).filter(Boolean) as WordCategory[];
     if (!categories.length) throw Error('categories 里没有合法的分类');
     const ids = new Set(categories.map((c) => c.id));
-    const tags: WordTag[] = parsed.tags
-      .filter((t: any) => t && ids.has(String(t.cat ?? '')))
-      .map((t: any) => ({ cat: String(t.cat), zh: String(t.zh ?? ''), en: String(t.en ?? '') }))
-      .filter((t: WordTag) => t.zh.trim() || t.en.trim());
-    if (!tags.length) throw Error('tags 里没有能用的词条（cat 要能对上 categories）');
+    const tags: WordTag[] = [];
+    for (const item of parsed.tags) {
+      if (!item || typeof item !== 'object') continue;
+      const cat = String(item.cat ?? item.category ?? '');
+      const values = tagValues(item);
+      if (!ids.has(cat) || !Object.keys(values).length) continue;
+      tags.push({ cat, values });
+    }
+    if (!tags.length) throw Error('tags 里没有能用的词条（cat 要能对上 categories，且至少有一个文本字段）');
     const clean = {
       version: parsed.version ?? 1,
       license: String(parsed.license ?? ''),
@@ -547,7 +739,7 @@ export function createWordEngine(options: { file: string; sample?: string; readC
       note: String(parsed.note ?? ''),
       builtAt: String(parsed.builtAt ?? parsed.generatedAt ?? new Date().toISOString()),
       categories,
-      tags,
+      tags: tags.map((tag) => ({ cat: tag.cat, ...tag.values })),
     };
     mkdirSync(dirname(options.file), { recursive: true });
     const tmp = `${options.file}.tmp`;

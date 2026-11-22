@@ -9,7 +9,7 @@ import type { Context, MultimodalToolOutput } from 'whalelife';
 import { backendName, runBackend, type ProviderContext } from '../../lib/providers.ts';
 import { requestOf } from '../../lib/request.ts';
 import { SIZE_FOR, normalizePaintingStyle, paintPrompt, selfPortraitPrompt, selfiePrompt, snapshotPrompt, type ShootKind } from './lib/look.ts';
-import { randomPaintingStyle, randomSubject, resolveSelfieContext, resolveSnapshotContext } from './lib/context.ts';
+import { findPoseItem, randomPaintingStyle, randomSubject, readSchedule, resolveSelfieContext, resolveSnapshotContext } from './lib/context.ts';
 import { runImgtool } from '../../lib/media.ts';
 import { renderImageSettings } from '../../lib/sub-settings.ts';
 import { describeTask, TaskBox } from '../../lib/tasks.ts';
@@ -41,7 +41,12 @@ type PromptkitService = {
   negativePrompt?(): Promise<string>;
 };
 
+/** 画室子插件「姿势」通过 data 目录提供姿势；draw 的 pose 参数按 id / 组 / 关键词 / current 取。 */
+
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+/** 本地日期 YYYY-MM-DD。 */
+const dateKey = (now: Date) => `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
 
 export async function apply(ctx: Context) {
   const studio = () => ctx.get('studio') as unknown as StudioService;
@@ -50,6 +55,7 @@ export async function apply(ctx: Context) {
     root: pluginsRoot,
     schedule: cfg?.integrations?.schedule,
     wardrobe: cfg?.integrations?.wardrobe,
+    pose: cfg?.integrations?.pose,
     sceneDetails: cfg?.integrations?.sceneDetails,
     defaultOutfit: cfg?.persona?.defaultOutfit,
     selfieFallbackScene: cfg?.persona?.selfieFallbackScene,
@@ -270,6 +276,9 @@ export async function apply(ctx: Context) {
         image: { type: 'string', description: '参考图 / 首图的本地路径' },
         mask: { type: 'string', description: '蒙版本地路径，白=重画' },
         strength: { type: 'number', description: '重绘强度 0–1' },
+        pose: { type: 'string', description: '姿势 id / 组 key / 姿势名关键词。可选；不填就不用姿势参考，出图完全不干预。填了就把这组姿势的英文片段接进 prompt' },
+        pose_view: { type: 'string', description: '姿势视角：front / diag / side / back / high / low' },
+        pose_depth: { type: 'boolean', description: 'true 取深度图参考路径（配 ControlNet Depth）' },
         wait_seconds: { type: 'integer', description: '最多等多久，默认 180；超时给任务号' },
       },
       required: ['prompt'],
@@ -278,7 +287,36 @@ export async function apply(ctx: Context) {
     async run(args: any, session) {
       const req = requestOf(args);
       if (!req.prompt) return { status: 'error', error: 'prompt 不能为空' };
-      return shoot(args, session, req.prompt);
+      let prompt = req.prompt;
+      const poseNotes: string[] = [];
+      // 显式给了 pose 才加：姿势插件按 id / 组 / 关键词取一组，返回英文片段和参考图地址。
+      const wantedPose = String(args?.pose ?? '').trim();
+      if (wantedPose) {
+        try {
+          const cfg = await studio().config();
+          const paths = await studio().paths();
+          const options = sceneOptionsOf(cfg, paths.pluginsRoot);
+          const hit = findPoseItem(wantedPose, '', undefined, options);
+          if (!hit) {
+            return {
+              status: 'error',
+              error: options.pose?.enabled === false
+                ? '姿势联动是关的：到画室设置里打开 integrations.pose，或先装「姿势」子插件。'
+                : `没取到姿势「${wantedPose}」：检查 id 或关键词；private（性感系）要先开 integrations.pose.allowPrivate 和姿势高级开关，双人组还要再开双人开关。`,
+            };
+          }
+          if (hit.en) prompt = `${prompt}, ${hit.en}`;
+          poseNotes.push(`姿势：${hit.name}（${hit.view}）${hit.id ? ` · ${hit.id}` : ''}`);
+          if (hit.image) poseNotes.push(`姿势参考图：/plugins/studio/pose/thumb?id=${encodeURIComponent(hit.id)}&size=image`);
+          if (args?.pose_depth === true) poseNotes.push(`姿势深度图：/plugins/studio/pose/thumb?id=${encodeURIComponent(hit.id)}&size=depth`);
+        } catch (error: any) {
+          ctx.logger.warn(`[画画] 取姿势失败：${String(error?.message ?? error)}`);
+          return { status: 'error', error: `取姿势失败：${String(error?.message ?? error)}` };
+        }
+      }
+      const out: any = await shoot(args, session, prompt);
+      if (poseNotes.length) out.notes = [...poseNotes, ...(out.notes ?? [])];
+      return out;
     },
   });
 
@@ -818,14 +856,20 @@ export async function apply(ctx: Context) {
     } catch {
       models = {};
     }
+    let llmModels: any[] = [];
     try {
       health = await studioSvc.health();
     } catch (error: any) {
       health = { online: false, reason: String(error?.message ?? error).slice(0, 200) };
     }
+    try {
+      llmModels = ctx.models.list('chat');
+    } catch {
+      llmModels = [];
+    }
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     res.setHeader('Cache-Control', 'no-store');
-    res.end(renderImageSettings({ cfg, paths, workflows, models, health }));
+    res.end(renderImageSettings({ cfg, paths, workflows, models, health, llmModels }));
   }, { title: '画画设置', settings: true, navigation: true });
 
   ctx.web.api('/plugins/studio/image/settings/save', async (req: any, res: any, { signal }: any) => {
@@ -841,16 +885,111 @@ export async function apply(ctx: Context) {
       if (typeof body?.defaultBackend === 'string' && backends.includes(body.defaultBackend)) patch.defaultBackend = body.defaultBackend;
       if (typeof body?.outputDir === 'string') patch.outputDir = body.outputDir.slice(0, 400);
       if (typeof body?.python === 'string') patch.python = body.python.slice(0, 400);
+      for (const key of ['faceRef', 'faceLora']) {
+        if (typeof body?.[key] === 'string') patch[key] = body[key].slice(0, 400);
+      }
+      if (body?.faceLoraStrength !== undefined) {
+        const value = Number(body.faceLoraStrength);
+        if (Number.isFinite(value)) patch.faceLoraStrength = Math.max(0, Math.min(1.5, value));
+      }
       if (body?.backends?.comfy && typeof body.backends.comfy === 'object') {
         patch.backends = { comfy: {} };
         for (const key of ['workflow', 'model', 'size']) {
           if (typeof body.backends.comfy[key] === 'string') patch.backends.comfy[key] = body.backends.comfy[key].slice(0, 300);
         }
       }
+      if (body?.persona && typeof body.persona === 'object') {
+        patch.persona = {};
+        for (const key of ['appearance', 'defaultOutfit', 'prop', 'selfieFallbackScene', 'snapshotFallbackScene', 'painterStyle', 'paintFallbackSubject']) {
+          if (typeof body.persona[key] === 'string') patch.persona[key] = body.persona[key].slice(0, 1200);
+        }
+        for (const key of ['randomSubjects', 'paintStyles']) {
+          const value = body.persona[key];
+          if (Array.isArray(value)) patch.persona[key] = value.map((item: any) => String(item).trim()).filter(Boolean).slice(0, 60);
+          else if (typeof value === 'string') patch.persona[key] = value.split(/[,，\n]/).map((item) => item.trim()).filter(Boolean).slice(0, 60);
+        }
+      }
+      if (body?.integrations && typeof body.integrations === 'object') {
+        patch.integrations = { schedule: {}, wardrobe: {}, pose: {} };
+        if (body.integrations.schedule && typeof body.integrations.schedule === 'object') {
+          if (typeof body.integrations.schedule.enabled === 'boolean') patch.integrations.schedule.enabled = body.integrations.schedule.enabled;
+          if (typeof body.integrations.schedule.dataDir === 'string') patch.integrations.schedule.dataDir = body.integrations.schedule.dataDir.slice(0, 400);
+        }
+        if (body.integrations.wardrobe && typeof body.integrations.wardrobe === 'object') {
+          if (typeof body.integrations.wardrobe.enabled === 'boolean') patch.integrations.wardrobe.enabled = body.integrations.wardrobe.enabled;
+          if (typeof body.integrations.wardrobe.dataDir === 'string') patch.integrations.wardrobe.dataDir = body.integrations.wardrobe.dataDir.slice(0, 400);
+          if (typeof body.integrations.wardrobe.personaId === 'string') patch.integrations.wardrobe.personaId = body.integrations.wardrobe.personaId.slice(0, 120);
+        }
+        if (body.integrations.pose && typeof body.integrations.pose === 'object') {
+          if (typeof body.integrations.pose.enabled === 'boolean') patch.integrations.pose.enabled = body.integrations.pose.enabled;
+          if (typeof body.integrations.pose.dataDir === 'string') patch.integrations.pose.dataDir = body.integrations.pose.dataDir.slice(0, 400);
+          if (typeof body.integrations.pose.personaId === 'string') patch.integrations.pose.personaId = body.integrations.pose.personaId.slice(0, 120);
+          if (typeof body.integrations.pose.allowPrivate === 'boolean') patch.integrations.pose.allowPrivate = body.integrations.pose.allowPrivate;
+        }
+        if (body.integrations.sceneDetails !== undefined) {
+          const value = body.integrations.sceneDetails;
+          const list = Array.isArray(value) ? value : typeof value === 'string' ? value.split(/[,，\n]/) : [];
+          patch.integrations.sceneDetails = list.map((item: any) => String(item).trim()).filter(Boolean).slice(0, 60);
+        }
+      }
       await studio().save(patch);
       json(200, { ok: true });
     } catch (error: any) {
       json(400, { ok: false, error: String(error?.message ?? error).slice(0, 300) });
+    }
+  });
+
+  /** AI 一键生成人设提示词：走本体已配置的对话模型，只产出字段，不自动落盘。 */
+  ctx.web.api('/plugins/studio/image/settings/ai-persona', async (req: any, res: any, { signal }: any) => {
+    const json = (code: number, value: any) => {
+      res.statusCode = code;
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      res.end(JSON.stringify(value));
+    };
+    try {
+      const body = await readJsonBody(req, signal);
+      const choices = ctx.models.list('chat').filter((item: any) => item.callable);
+      if (!choices.length) return json(400, { ok: false, error: '本体没有可用的对话模型，先去模型服务里配置一个' });
+      const wanted = String(body?.model ?? '').trim();
+      const choice = choices.find((item: any) => item.id === wanted) || choices[0];
+      const current = body?.persona && typeof body.persona === 'object' ? body.persona : {};
+      const brief = String(body?.brief ?? '').trim().slice(0, 800);
+      const system = [
+        '你是角色设定师，为一个本地画室插件生成「人设提示词」。',
+        '只输出一个 JSON 对象，不要 markdown、不要解释。字段固定为：',
+        'appearance, defaultOutfit, prop, selfieFallbackScene, snapshotFallbackScene, painterStyle, paintFallbackSubject, randomSubjects, paintStyles。',
+        'appearance/defaultOutfit/prop/selfieFallbackScene/snapshotFallbackScene 用英文短语或短句，具体到年龄、性别、发型、脸型、服装材质与颜色。',
+        'painterStyle 用英文描述她作为业余画者的水平与习惯；paintFallbackSubject 用英文写一个固定绘画主体，可为空字符串。',
+        'randomSubjects 是 8–12 个英文名词短语数组；paintStyles 是 4–6 个英文画风数组，只能从 watercolor, pencil sketch, ink sketch, flat color, storybook illustration, oil painting, gouache, digital painting 中选。',
+        '每个字符串字段控制在 90 个英文单词以内，数组每项不超过 12 个单词；整体必须是完整、可解析的单一 JSON 对象。',
+        '不要出现相机、摄影道具，除非用户明确要求。不要编造真实人物身份。',
+      ].join('\n');
+      const user = JSON.stringify({ brief, current });
+      const reply = await ctx.llm.chat({
+        model: choice.id,
+        messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
+        max_tokens: 1600,
+        signal,
+      });
+      const text = String(reply.text || '').trim();
+      const start = text.indexOf('{');
+      const end = text.lastIndexOf('}');
+      if (start < 0 || end <= start) throw Error('模型没有返回 JSON：' + text.slice(0, 200));
+      const parsed: any = JSON.parse(text.slice(start, end + 1));
+      const persona: any = {};
+      for (const key of ['appearance', 'defaultOutfit', 'prop', 'selfieFallbackScene', 'snapshotFallbackScene', 'painterStyle', 'paintFallbackSubject']) {
+        if (typeof parsed[key] === 'string') persona[key] = parsed[key].trim().slice(0, 1200);
+      }
+      for (const key of ['randomSubjects', 'paintStyles']) {
+        const value = parsed[key];
+        persona[key] = (Array.isArray(value) ? value : typeof value === 'string' ? value.split(/[,，\n]/) : [])
+          .map((item: any) => String(item).trim())
+          .filter(Boolean)
+          .slice(0, 60);
+      }
+      json(200, { ok: true, model: choice.id, persona, usage: reply.usage });
+    } catch (error: any) {
+      json(400, { ok: false, error: String(error?.message ?? error).slice(0, 400) });
     }
   });
 

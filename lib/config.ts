@@ -3,7 +3,6 @@
  * Additional terms under AGPLv3 Section 7: see LICENSE-ADDITIONAL.
  */
 import { existsSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { parseSize } from './util.ts';
 
@@ -70,14 +69,26 @@ export type WardrobeCfg = {
   /** 衣柜 state 里的 persona key；留空自动取第一个 */
   personaId: string;
 };
+export type PoseCfg = {
+  enabled: boolean;
+  /** 相对 plugins 根目录，或绝对路径；姿势子插件 data 目录 */
+  dataDir: string;
+  /** 姿势 state 里的 persona key；留空自动取第一个 */
+  personaId: string;
+  /** 允许 draw 显式指定 private（性感系）姿势；默认关，未成年人格不要打开 */
+  allowPrivate: boolean;
+};
 export type IntegrationsCfg = {
   schedule: ScheduleCfg;
   wardrobe: WardrobeCfg;
+  pose: PoseCfg;
   /** 随手拍没有日程时用来补细节的英文短语池 */
   sceneDetails: string[];
 };
 
 export type StudioConfig = {
+  /** local=本地生图工具，network=网络生图接口 */
+  mode: 'local' | 'network';
   defaultBackend: string;
   python: string;
   outputDir: string;
@@ -86,8 +97,10 @@ export type StudioConfig = {
   /** 人设 LoRA（文件名）：没有参考图时用它锁脸 */
   faceLora: string;
   faceLoraStrength: number;
-  /** 本机 ComfyUI 根目录；留空自动探测 */
+  /** 本机 ComfyUI 根目录；留空不预填 */
   comfyRoot: string;
+  /** 本机 SD-WebUI 根目录；留空不预填 */
+  sdRoot: string;
   persona: PersonaCfg;
   integrations: IntegrationsCfg;
   backends: Record<string, BackendCfg>;
@@ -135,6 +148,7 @@ const DEFAULT_SCENE_DETAILS = [
 ];
 
 export const DEFAULTS: StudioConfig = {
+  mode: 'local',
   defaultBackend: 'comfy',
   python: '',
   outputDir: 'data/out',
@@ -142,6 +156,7 @@ export const DEFAULTS: StudioConfig = {
   faceLora: '',
   faceLoraStrength: 0.85,
   comfyRoot: '',
+  sdRoot: '',
   persona: {
     appearance: '',
     defaultOutfit: '',
@@ -156,11 +171,12 @@ export const DEFAULTS: StudioConfig = {
   integrations: {
     schedule: { enabled: false, dataDir: 'schedule/data/days' },
     wardrobe: { enabled: false, dataDir: 'schedule/sub/wardrobe/data', personaId: '' },
+    pose: { enabled: true, dataDir: 'studio/sub/pose/data', personaId: '', allowPrivate: false },
     sceneDetails: DEFAULT_SCENE_DETAILS.slice(),
   },
   backends: {
-    comfy: backend({ baseUrl: 'http://127.0.0.1:8188', workflowsDir: '', canvasDir: '', modelsDir: '' }),
-    sdwebui: backend({ enabled: false, baseUrl: 'http://127.0.0.1:7860' }),
+    comfy: backend({ enabled: false, baseUrl: '', workflowsDir: '', canvasDir: '', modelsDir: '' }),
+    sdwebui: backend({ enabled: false, baseUrl: '', model: '' }),
     openai: backend({ enabled: false, baseUrl: 'https://api.openai.com/v1', model: 'gpt-image-1', size: '1024x1024', timeoutMs: 180_000 }),
     gemini: backend({ enabled: false, baseUrl: 'https://generativelanguage.googleapis.com', model: 'gemini-2.5-flash-image', timeoutMs: 180_000 }),
     dashscope: backend({ enabled: false, baseUrl: 'https://dashscope.aliyuncs.com', model: 'wanx2.2-t2i-flash', size: '1024*1024' }),
@@ -203,6 +219,7 @@ export function normalize(raw: any): StudioConfig {
   const source = raw && typeof raw === 'object' ? raw : {};
   const out: StudioConfig = JSON.parse(JSON.stringify(DEFAULTS));
 
+  out.mode = source.mode === 'network' ? 'network' : 'local';
   const defaultBackend = text(source.defaultBackend);
   if ((BACKEND_NAMES as readonly string[]).includes(defaultBackend)) out.defaultBackend = defaultBackend;
 
@@ -214,6 +231,7 @@ export function normalize(raw: any): StudioConfig {
     ? Math.max(0, Math.min(1.5, Number(source.faceLoraStrength)))
     : DEFAULTS.faceLoraStrength;
   out.comfyRoot = text(source.comfyRoot, '', 400);
+  out.sdRoot = text(source.sdRoot, '', 400);
 
   const persona = source.persona && typeof source.persona === 'object' ? source.persona : {};
   out.persona = {
@@ -231,6 +249,7 @@ export function normalize(raw: any): StudioConfig {
   const integrations = source.integrations && typeof source.integrations === 'object' ? source.integrations : {};
   const schedule = integrations.schedule && typeof integrations.schedule === 'object' ? integrations.schedule : {};
   const wardrobe = integrations.wardrobe && typeof integrations.wardrobe === 'object' ? integrations.wardrobe : {};
+  const pose = integrations.pose && typeof integrations.pose === 'object' ? integrations.pose : {};
   out.integrations = {
     schedule: {
       enabled: typeof schedule.enabled === 'boolean' ? schedule.enabled : DEFAULTS.integrations.schedule.enabled,
@@ -240,6 +259,12 @@ export function normalize(raw: any): StudioConfig {
       enabled: typeof wardrobe.enabled === 'boolean' ? wardrobe.enabled : DEFAULTS.integrations.wardrobe.enabled,
       dataDir: text(wardrobe.dataDir, DEFAULTS.integrations.wardrobe.dataDir, 400) || DEFAULTS.integrations.wardrobe.dataDir,
       personaId: text(wardrobe.personaId, '', 100),
+    },
+    pose: {
+      enabled: typeof pose.enabled === 'boolean' ? pose.enabled : DEFAULTS.integrations.pose.enabled,
+      dataDir: text(pose.dataDir, DEFAULTS.integrations.pose.dataDir, 400) || DEFAULTS.integrations.pose.dataDir,
+      personaId: text(pose.personaId, '', 100),
+      allowPrivate: pose.allowPrivate === true,
     },
     sceneDetails: list(integrations.sceneDetails, DEFAULTS.integrations.sceneDetails),
   };
@@ -294,6 +319,7 @@ export function publicConfig(cfg: StudioConfig): any {
 export function applyPatch(current: StudioConfig, patch: any): StudioConfig {
   const merged: any = JSON.parse(JSON.stringify(current));
   if (patch && typeof patch === 'object') {
+    if (patch.mode !== undefined) merged.mode = patch.mode;
     if (patch.defaultBackend !== undefined) merged.defaultBackend = patch.defaultBackend;
     if (patch.outputDir !== undefined) merged.outputDir = patch.outputDir;
     if (patch.faceRef !== undefined) merged.faceRef = patch.faceRef;
@@ -301,6 +327,7 @@ export function applyPatch(current: StudioConfig, patch: any): StudioConfig {
     if (patch.faceLoraStrength !== undefined) merged.faceLoraStrength = patch.faceLoraStrength;
     if (patch.python !== undefined) merged.python = patch.python;
     if (patch.comfyRoot !== undefined) merged.comfyRoot = patch.comfyRoot;
+    if (patch.sdRoot !== undefined) merged.sdRoot = patch.sdRoot;
     if (patch.persona && typeof patch.persona === 'object') {
       for (const key of ['appearance', 'defaultOutfit', 'prop', 'selfieFallbackScene', 'snapshotFallbackScene', 'painterStyle', 'paintFallbackSubject', 'randomSubjects', 'paintStyles']) {
         if (patch.persona[key] !== undefined) merged.persona[key] = patch.persona[key];
@@ -315,6 +342,11 @@ export function applyPatch(current: StudioConfig, patch: any): StudioConfig {
       if (patch.integrations.wardrobe && typeof patch.integrations.wardrobe === 'object') {
         for (const key of ['enabled', 'dataDir', 'personaId']) {
           if (patch.integrations.wardrobe[key] !== undefined) merged.integrations.wardrobe[key] = patch.integrations.wardrobe[key];
+        }
+      }
+      if (patch.integrations.pose && typeof patch.integrations.pose === 'object') {
+        for (const key of ['enabled', 'dataDir', 'personaId', 'allowPrivate']) {
+          if (patch.integrations.pose[key] !== undefined) merged.integrations.pose[key] = patch.integrations.pose[key];
         }
       }
       if (patch.integrations.sceneDetails !== undefined) merged.integrations.sceneDetails = patch.integrations.sceneDetails;
@@ -339,18 +371,9 @@ export function applyPatch(current: StudioConfig, patch: any): StudioConfig {
   return normalize(merged);
 }
 
-/** ComfyUI 根目录：配置 → COMFY_ROOT → 用户目录常见位置。返回空串表示还没配。 */
+/** ComfyUI 根目录：只认显式配置或 COMFY_ROOT；不再猜用户目录。 */
 export function defaultComfyRoot(cfg?: Pick<StudioConfig, 'comfyRoot'> | null): string {
-  const configured = String(cfg?.comfyRoot ?? '').trim();
-  if (configured) return configured;
-  const env = String(process.env.COMFY_ROOT ?? '').trim();
-  if (env) return env;
-  const home = homedir();
-  const candidates = [join(home, 'ComfyUI'), join(home, 'comfyui'), join(home, 'Documents', 'ComfyUI')];
-  for (const candidate of candidates) {
-    if (existsSync(candidate)) return candidate;
-  }
-  return '';
+  return String(cfg?.comfyRoot ?? '').trim() || String(process.env.COMFY_ROOT ?? '').trim();
 }
 
 /** 找 Python：配置 → 环境变量 → ComfyUI 自带 → 常见位置 → PATH。找不到返回空串。 */

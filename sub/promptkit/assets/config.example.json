@@ -1,0 +1,26 @@
+{
+  "lang": "primary",
+  "pickCount": 3,
+  "disabledCategories": [],
+  "recipeLayers": [],
+  "recipeMaxLayers": 6,
+  "autoEnrich": false,
+  "enrichKinds": ["*"],
+  "enrichLayers": [],
+  "enrichCount": 2,
+  "allowNsfw": false,
+  "negativePrompt": "",
+  "fields": {
+    "primary": "en",
+    "secondary": "zh"
+  },
+  "semantics": {
+    "negative": "negative",
+    "quality": "quality",
+    "nsfwPrefix": "nsfw"
+  },
+  "qualityAllowlist": [],
+  "blockedPatterns": [
+    "\\b(explicit|sensitive|nsfw|nude|naked|lingerie|underwear|swimwear|bikini|cleavage)\\b"
+  ]
+}

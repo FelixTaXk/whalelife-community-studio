@@ -40,18 +40,27 @@ function recCards(r: Recommendation) {
         )
         .join('');
       const wf = item.workflow;
+      const canBuild = Boolean(item.buildable && item.localModel);
+      const buildHint = canBuild
+        ? `用本机 <code>${esc(item.localModel)}</code>`
+        : item.buildable
+          ? '本机还没有这份权重，先下载/自备'
+          : '这套模型的工作流还不能自动拼，先用 ComfyUI 官方模板跑通';
       return `<div class="rec">
         <div class="rec-head">
           <b>${esc(item.name)}</b>
           <span class="tag ${item.fit}">${FIT[item.fit] || item.fit}</span>
+          ${item.kind === 'video' ? '<span class="tag video">视频</span>' : ''}
           <span class="tag ${item.local ? 'local' : ''}">${item.local ? '本机已有' : '需下载/自备'}</span>
         </div>
-        <p class="hint">${esc(item.purpose)} · 约 ${item.vramGB}G 显存 · ${esc(wf.width)}×${esc(wf.height)} / ${wf.steps} 步 / cfg ${wf.cfg} / ${esc(wf.sampler)}·${esc(wf.scheduler)}</p>
+        <p class="hint">${esc(item.purpose)}</p>
+        <p class="hint">${esc(item.params)} · 约 ${item.vramGB}G 显存 · ${esc(item.license)}</p>
+        <p class="hint">${esc(wf.width)}×${esc(wf.height)} / ${wf.steps} 步 / cfg ${wf.cfg} / ${esc(wf.sampler)}·${esc(wf.scheduler)}</p>
         <table class="files">${files}</table>
         <p class="hint">${item.notes.map(esc).join('；')}</p>
         <div class="row">
-          <button data-build="${esc(item.localModel || '')}" data-family="${esc(item.family)}"${item.localModel ? '' : ' disabled'}>生成这套工作流</button>
-          ${item.localModel ? `<span class="hint">用本机 <code>${esc(item.localModel)}</code></span>` : '<span class="hint">本机还没有这份权重，先下载/自备</span>'}
+          <button data-build="${esc(canBuild ? item.localModel : '')}" data-family="${esc(item.family)}"${canBuild ? '' : ' disabled'}>生成这套工作流</button>
+          <span class="hint">${buildHint}</span>
         </div>
       </div>`;
     })
@@ -67,7 +76,7 @@ export function renderSetup(data: { probe: SystemProbe; rec: Recommendation; sta
 <style>
 :root{color-scheme:light dark;font:15px/1.65 system-ui,-apple-system,"Microsoft YaHei",sans-serif;--ink:#203438;--muted:#617477;--line:#dce6e5;--paper:#fff;--soft:#f4f8f7;--accent:#126e68;background:var(--soft);color:var(--ink)}
 @media (prefers-color-scheme:dark){:root{--ink:#e4ecee;--muted:#9aadb2;--line:#2d3b3f;--paper:#1b2427;--soft:#151b1d;--accent:#5cb5ad}}
-*{box-sizing:border-box}body{margin:0;padding:32px 28px 40px}main{max-width:940px;margin:0 auto}
+*{box-sizing:border-box}body{margin:0;padding:12px 28px 40px}main{max-width:940px;margin:0 auto}
 header{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;margin-bottom:18px}
 h1{font-size:27px;letter-spacing:-.5px;margin:0 0 4px;font-weight:650}p.sub{margin:0;color:var(--muted);font-size:13px}
 section.card{background:var(--paper);border:1px solid var(--line);border-radius:14px;padding:20px 22px;margin:18px 0}
@@ -79,11 +88,11 @@ th{color:var(--muted);font-weight:500;width:88px}table.files th,table.files td{b
 .rec-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .tag{font-size:12px;padding:2px 7px;border-radius:999px;border:1px solid var(--line);color:var(--muted)}
 .tag.best{color:#0f6b3f;border-color:#b6dcc6;background:#eef8f1}.tag.ok{color:#12586e;border-color:#bcd9e4;background:#eef6fa}
-.tag.heavy{color:#8a3b2e;border-color:#e4c2bb;background:#fbefed}.tag.local{color:#7a5a1e;border-color:#e8cfa2;background:#fdf7ea}
+.tag.heavy{color:#8a3b2e;border-color:#e4c2bb;background:#fbefed}.tag.light{color:#6a5a1e;border-color:#e5d9ad;background:#fbf8ec}.tag.local{color:#7a5a1e;border-color:#e8cfa2;background:#fdf7ea}.tag.video{color:#5a3f7a;border-color:#d9cbe8;background:#f4effa}
 .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:10px}
 button{font:inherit;padding:9px 14px;border:1px solid var(--line);border-radius:7px;background:var(--paper);color:var(--ink);cursor:pointer}
 button.primary{background:var(--accent);border-color:var(--accent);color:#fff}button:disabled{opacity:.5;cursor:not-allowed}
-input{font:inherit;padding:9px 12px;border:1px solid var(--line);border-radius:7px;background:var(--paper);color:var(--ink);min-width:280px}
+input{font:inherit;padding:9px 12px;border:1px solid var(--line);border-radius:7px;background:var(--paper);color:var(--ink);min-width:280px;min-height:40px;box-sizing:border-box;line-height:1.5;vertical-align:middle}
 #msg{min-height:22px;margin-top:10px;font-size:13px;color:var(--accent)}#msg.bad{color:#b23c3c}
 pre.log{background:var(--soft);border:1px solid var(--line);border-radius:8px;padding:10px;max-height:220px;overflow:auto;font-size:12px;white-space:pre-wrap}
 .banner{padding:10px 14px;border:1px solid var(--line);border-radius:10px;margin:0 0 10px;font-size:13px;background:var(--paper)}
@@ -103,7 +112,7 @@ ${data.error ? `<div class="banner warn">${esc(data.error)}</div>` : ''}
 <section class="card">
   <h2>推荐组合</h2>
   <p class="hint"><b>${esc(data.rec.gpu)}</b> · 档位 ${esc(data.rec.tier)} · ${esc(data.rec.summary)}</p>
-  <p class="hint">顺序按「本机已有 → 显存合适」排；带下载链接的是公开权重，没链接的需要自备（插件不替你猜来源）。</p>
+  <p class="hint">顺序按「显存适配 → 综合质量 → 本机已有」排；带链接的是公开仓库，没链接或写“需自备”的要自己找来源。FLUX.3 Klein、Qwen-Image 2.1、Z-Image、MOSS、SDXL、SD1.5 能直接拼工作流；其余新模型先按官方模板跑通再接。</p>
   ${recCards(data.rec)}
   <p class="hint">${data.rec.next.map(esc).join('<br>')}</p>
 </section>
@@ -112,7 +121,7 @@ ${data.error ? `<div class="banner warn">${esc(data.error)}</div>` : ''}
   <h2>一键部署 / 启动 ComfyUI</h2>
   <p class="hint">用 git + venv 装官方 ComfyUI：克隆 → 建 venv → 按显卡驱动装 torch（CUDA 12.4 / 12.1 / 11.8）→ 装 requirements → 起 8188。首次下载约 2–4G，耗时看网速；日志在 <code>data/logs/deploy.log</code>。</p>
   <div class="row">
-    <input id="root" value="${esc(root)}" placeholder="用户目录下的 ComfyUI">
+    <input id="root" value="${esc(root)}" placeholder="留空部署到插件内 local/comfyui">
     <button class="primary" id="install"${busy ? ' disabled' : ''}>一键部署</button>
     <button id="start"${busy ? ' disabled' : ''}>只启动</button>
     <button id="status">刷新状态</button>

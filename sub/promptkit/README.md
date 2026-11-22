@@ -1,131 +1,139 @@
-# 提示词小抄（promptkit）
+# 提示词小抄（promptkit）· 画室子插件
 
-画室的子插件（`plugins/studio/sub/promptkit`）。给生图链路补细节：姿势、表情、构图、镜头、光影、场景、天气、道具、风格。
+画室的提示词子插件，放在 `plugins/studio/sub/promptkit`。它做四件事：
 
-词库是**可选**的：随包带一份自撰的示例词库（11 个分类、140 条通用词，CC0-1.0，可自由再分发），装完即用；
-想用自己的词库就在设置页导入，或把 `prompts.json` 放进 `data/`。自己词库的原始版权数据只留本地，不进仓库。
+- 按分类查词；
+- 按分类随机挑词；
+- 按配方层拼一段随机描述；
+- 给画画的出图流程提供「自动补词」和「共用负面提示词」。
 
-词库可以带成人分类（id 以 `nsfw` 开头）。这类分类默认**关闭**，要用得在设置页打开 NSFW 开关并确认一次警告；
-自动补词始终不使用成人分类。随包示例词库不含成人内容。
+词库引擎常驻父插件 `studio/lib/words.ts`，由父级 `ctx.provide('promptkit')` 暴露；本子插件只负责工具、设置页和导入接口。画画子插件与设置页共享同一份引擎。
 
-不做的事：不换脸、不改年龄、不碰服装程度分级。
+## 安装与入口
+
+1. 确认 `plugins/studio/plugin.yaml` 的 `sub` 包含 `promptkit`。
+2. 把本目录放在 `plugins/studio/sub/promptkit`。
+3. 重启 WhaleLife；日志应出现：
+   - `画室已加载`
+   - `[画画] 提示词小抄已接入`
+   - `提示词小抄已加载 {"settings":"/plugins/studio/promptkit/settings"}`
+4. 从「画室设置」页顶部导航的 **提示词小抄** 进入设置；也可以直接打开 `/plugins/studio/promptkit/settings`。
+
+本子插件不再注册独立的插件设置入口，设置入口统一挂在画室设置里；画画、拍视频、提示词小抄三个设置页共用画室子插件导航。
+
+## 词库
+
+- 用户词库：`data/prompts.json`（优先）；
+- 随包示例：`assets/prompts.sample.json`（CC0-1.0，11 个分类、通用词）；
+- 两份都没有时返回空词库，页面给导入说明，不报 500。
+
+用户词库坏了会自动回退到示例，并在页面和工具结果里标 `broken` / `notice`。用户词库属于本地数据，不进发布包。
 
 ## 工具
 
 | 工具 | 作用 |
 | --- | --- |
-| `prompt_categories` | 看有哪些分类、各多少条 |
-| `prompt_search` | 按关键词找词（中英都行） |
-| `prompt_pick` | 按分类随机挑几个词，默认给英文 |
-| `prompt_recipe` | 按固定配方（构图/光影/姿势/表情/风格）拼一段随机描述，场景和道具自己补 |
+| `prompt_categories` | 看当前启用的分类和词条数量 |
+| `prompt_search` | 按关键词找词，匹配词条的所有文本字段 |
+| `prompt_pick` | 按分类随机挑几个词，默认返回主字段 |
+| `prompt_recipe` | 按配置的配方层各取一个词，拼接成一段描述 |
 
-负面词不在任何分类列表里出现：它们统一放在设置页的「负面提示词」里，编辑成一条**共用负面提示词**，
-查词、挑词、配方都不会返回负面词。
+负面分类不出现在分类列表、随机挑词和配方里，统一放在设置页的「共用负面提示词」里维护。
 
-## 接进了生图流程
+## 服务契约
 
-`draw` / `draw_batch` 出图前会自动调用本插件的 `enrich()`：
+父插件注册的服务：
 
-1. 先把 prompt 里已经写的中文词补成词库英文（例如「校服」→ `school uniform`、「阳台」→ `balcony`）；
-2. 再从设置里勾选的层补词，正文里已经有的词跳过；
-3. 补了什么会写进出图结果的 `notes`，例如 `小抄补词：8k, intricate details`。
+```ts
+type PromptkitService = {
+  enrich(input: { text: string; kind?: string; signal?: AbortSignal }): Promise<{
+    text: string;
+    added: Array<{ cat: string; word: string; why: string }>;
+    skipped: string;
+  }>;
+  recipe(input: { extra?: string; lang?: string; layers?: string[] }): Promise<{
+    status: string;
+    text: string;
+    layers: Array<{ category: string; words: string[] }>;
+  }>;
+  negativePrompt(): Promise<string>;
+};
+```
 
-第 1 步不受「从哪些层补」限制：只要分类是启用的，正文里的中文就可能被换成对应英文
-（服饰、光影、场景都算）。所以即使只勾了「质量与风格」，也可能看到 `school uniform` 被补上。
+画画子插件在 `plugin.yaml` 里声明 `optionalDepends: [promptkit]`，并用 `ctx.optional('promptkit', …)` 绑定。服务由父级提供，所以同一父级下的子插件都能解析；停用画室时一起释放。
 
-成人分类和负面词**永远不参与自动补词**：补词是无人值守地往每张图上加词，不该悄悄塞进成人内容。
+`kind` 只用于匹配配置里的动作白名单，默认 `*` 表示全部接受；引擎不认识具体动作名。
 
-## 共用负面提示词
+## 配置
 
-设置页的「负面提示词」是一块可以直接改的文本框：
+配置保存在子插件自己的 `data/config.json`，设置页改的就是这份文件。`assets/config.example.json` 是一份完整示例。所有字段都有默认值，缺项不会报错。
 
-- 填的内容会作为 `draw` / `selfie` / `snapshot` / `paint` 的**共用负面**：调用时自己没传 `negative` 才用它，
-  传了就以传的为准；留空 = 不覆盖工作流自带的负面。
-- 「填入词库里的全部负面词」把词库「负面」分类里的词按英文拼进来，之后可以自己删改。
-- 上限 4000 字符，保存时自动去首尾空格。这项改动要重载插件后对出图生效。
+| 字段 | 作用 |
+| --- | --- |
+| `lang` | 默认返回语言：`primary` / `secondary` / `both`；旧值 `en` / `zh` 会映射到主/副字段 |
+| `pickCount` | 默认挑词数量，1–8 |
+| `disabledCategories` | 不参与查词/挑词/配方的分类 id |
+| `recipeLayers` | 配方层；留空时按启用分类兜底 |
+| `recipeMaxLayers` | 配方最多生成多少层，1–20 |
+| `autoEnrich` | 自动补词总开关，默认关 |
+| `enrichKinds` | 动作白名单；`["*"]` 表示所有 `kind` 都补 |
+| `enrichLayers` | 自动补词从哪些分类补；留空则不补 |
+| `enrichCount` | 每次最多补几个，1–5 |
+| `allowNsfw` | 是否允许查词工具使用成人分类，默认 `false` |
+| `negativePrompt` | 共用负面提示词，上限 4000 字符 |
+| `fields.primary` | 词条主字段，默认 `en`；自动补词优先用它 |
+| `fields.secondary` | 词条副字段，默认 `zh`；正文命中副字段时补主字段 |
+| `semantics.negative` | 负面分类 id，默认 `negative`；留空表示没有负面分类 |
+| `semantics.quality` | 质量分类 id，默认 `quality` |
+| `semantics.nsfwPrefix` | 成人分类 id 前缀，默认 `nsfw`；分类对象上的 `nsfw` / `adult` / `role: nsfw` 优先 |
+| `qualityAllowlist` | 质量分类里只允许这些词参与自动补词；留空表示不额外收窄 |
+| `blockedPatterns` | 自动补词的安全词正则数组；留空表示不额外过滤 |
 
-默认 `draw` / `draw_batch` / `selfie` / `snapshot` / `paint` 都补，而且只补「质量与风格」里的质量词
-（杰作/最佳质量/高分辨率等），画风词（anime / watercolor）和分级词（explicit / sensitive）不会自动加；
-自拍/随手拍/画一幅固定的构图、镜头不动。想要更多细节可以把光影、场景等层勾上，也可以单独关掉某个动作。
+### 字段名不固定
 
-图省事也可以不开自动：手动把 `prompt_pick` / `prompt_recipe` 的 `text` 填进
-`selfie.scene`、`selfie.mood`、`selfie.outfit` 或 `draw.prompt`。
-
-## NSFW 开关
-
-词库里的成人分类（`nsfwbody` / `nsfwcloth` / `nsfwact` / `nsfwplay`，合起来 475 条）默认是关着的：
-
-- 关着时，四个查词工具里看不到这些分类，按分类查/挑会直接说「成人分类，开关没开」；
-- 打开时，设置页先弹一次确认框，服务端还要求请求带 `acknowledgeNsfw: true` —— 直接调接口也绕不过去；
-  打开后页面顶部常驻一条红字警告，关掉即消失；
-- 开关只影响**查词**。自动补词无论开关开没开，都不会用成人分类；
-- 判断标准是分类 id 以 `nsfw` 开头，所以换词库、加分类都不用改代码。
-
-## 结构
-
-- 词库引擎：`plugins/studio/lib/words.ts`，由**本插件**在 `apply()` 里创建并 `ctx.provide('promptkit', …)`；
-  引擎负责成人分类的门控（`allowNsfw`）与统计；
-- 本插件：注册工具、设置页和导入 API；配置用 `ctx.config`（自己的 `data/config.json`）；
-- 画画子插件：在 `optionalDepends` 里声明 `promptkit`，用 `ctx.optional('promptkit', …)` 拿到服务。
-  **停用/卸载本插件时这个绑定会一起失效，自动补词也随之停止**；父级不再读本插件的私有配置。
-
-词库查找顺序：`data/prompts.json`（用户自己的）→ `assets/prompts.sample.json`（随包示例）→ 空词库。
-引擎平时只读；只有用户在设置页点「导入词库」时才会写 `data/prompts.json`。
-
-## 数据与重建
-
-- **随包示例**：`assets/prompts.sample.json`，11 个分类、140 条通用词，自撰，CC0-1.0；
-- **自己的词库**：`data/prompts.json`（不入 git），可以从自己的源数据重建；
-- 重建：
-  - `node scripts/build-data.mjs --full` —— 全量，保留 25 个分类、2742 条词（含 NSFW 四类 475 条）；
-  - `node scripts/build-data.mjs` —— 安全子集，去掉 NSFW、人物基础/身材/面部/怪物，再按黑名单过滤（17 个分类）；
-  - 两者都读 `FORGE_SRC` 指向的源数据（默认 `D:/dafeiyu/fish-extra/lib/forge-data.json`，只读不改源文件）。
-- 检查格式：`node scripts/check-data.mjs`（默认看 `data/prompts.json`，也可以传路径）。会报分类数、词条数、
-  NSFW 条数；格式不对时直接说哪里不对（例如把源数据的 `cats` 字段名当成了 `categories`）。
-- 自测：`node scripts/selftest.mjs` —— 不需要宿主，直接跑引擎 + 设置页 + 接口的关键约定
-  （开关与确认、补词不用成人分类、负面不参与随机、导入兼容源数据、坏词库回退），全过退出码 0。
-  只用内存里的假 ctx，不读写你的配置；唯一写盘的是导入那一项，落在系统临时目录、跑完即删。
-
-引擎两种写法都能读：`categories`（本插件格式）和 `cats`（PromptForge 源数据），
-所以把自己的源数据直接丢进 `data/` 也能用，不必先转格式。
-
-`scripts/build-data.mjs` 的过滤规则在文件顶部（整类剔除与词条黑名单），只对安全子集生效；
-示例词库是手写的通用词，不含成人内容，也不依赖这个脚本。
-
-## 设置页
-
-控制台 → 画室 → 提示词小抄，或直接打开 `/plugins/studio/promptkit/settings`：
-
-- **词库**：看当前用的是自己的还是随包示例；选 JSON 文件导入（上限 8MB）、下载示例词库、恢复示例词库
-- **默认语言 / 默认挑词数量**：工具没传 `lang` / `count` 时用
-- **生图自动补词**：总开关、每次最多补几个（1–5）
-- **给哪些动作补**：draw / selfie / snapshot / paint，默认四个都开
-- **从哪些层补**：默认只有「质量与风格」；成人分类禁用
-- **负面提示词**：共用负面文本（可一键填入词库里全部负面词，再自己删改）
-- **启用的分类**：取消勾选的分类不再出现在工具里（数据不删，随时勾回）
-- **随机配方用的层**：`prompt_recipe` 只从勾选的层各取一个词
-- **重新载入数据 / 恢复默认 / 保存设置**
-- **高级设置**（页面最下面一行小字，默认折叠）：NSFW 开关、开着时的红字警告；关着时成人分类在列表里整行隐藏，页头也不显示数量
-
-`data/config.json` 结构：
+词条结构是：
 
 ```json
 {
-  "lang": "en",
-  "pickCount": 3,
-  "disabledCategories": ["negative"],
-  "recipeLayers": ["composition", "lighting", "pose", "expression", "style"],
-  "autoEnrich": true,
-  "enrichKinds": ["draw", "selfie", "snapshot", "paint"],
-  "enrichLayers": ["style"],
-  "enrichCount": 2,
-  "allowNsfw": false,
-  "negativePrompt": ""
+  "categories": [
+    { "id": "lighting", "name": "光影", "role": "quality" }
+  ],
+  "tags": [
+    { "cat": "lighting", "zh": "逆光", "en": "backlight" }
+  ]
 }
 ```
 
+字段名可以不是 `zh` / `en`。把 `fields` 设成 `{ "primary": "prompt", "secondary": "cn" }` 就能用。分类可以带 `role`（`negative` / `quality` / `nsfw`）或布尔 `nsfw` / `adult`。
+
+## 自动补词
+
+调用方把正文交给 `enrich()` 后：
+
+1. 先把正文里出现的副字段换成词库主字段；
+2. 再从 `enrichLayers` 勾选的分类里挑词，正文里已经有的词跳过；
+3. 成人分类、负面分类、命中 `blockedPatterns` 的词永远不补；
+4. 质量分类如果配置了 `qualityAllowlist`，只允许白名单里的词。
+
+自动补词默认关闭，补了什么会通过 `added` 返回。
+
+## 成人分类
+
+分类对象上带 `nsfw: true`、`adult: true` 或 `role: "nsfw"`，或者 id 命中 `semantics.nsfwPrefix`，就算成人分类。
+
+- 默认关闭：四个查词工具里看不到，按分类查/挑会明确说「开关没开」；
+- 打开时，设置页先弹一次确认框，服务端还要求请求带 `acknowledgeNsfw: true`；
+- 打开后页面顶部常驻警告，关掉即消失；
+- 开关只影响查词。自动补词无论开关开没开，都不会用成人分类。
+
+## 脚本
+
+- **重建**：`node scripts/build-data.mjs --source <词库.json> [--out data/prompts.json] [--only a,b] [--exclude c]`
+- **校验**：`node scripts/check-data.mjs [文件] [--nsfw-prefix adult] [--negative bad]`
+- **自测**：`node scripts/selftest.mjs`（不需要宿主，使用临时合成词库）
+
 ## 许可
 
-随包示例词库 `assets/prompts.sample.json` 为本项目自撰，CC0-1.0，可自由复制、修改、再分发。
-用户自己导入的 `data/prompts.json` 版权归其来源方，不进本仓库、不再分发；如果里面含成人内容，
-只留本地、只在本人使用的实例里开关，不要把词库或生成结果公开分发。
+插件代码为 AGPL-3.0-only，完整条款见 `LICENSE`。
+
+随包示例词库 `assets/prompts.sample.json` 为本项目自撰，CC0-1.0，可自由复制、修改、再分发。用户导入的词库版权归其来源方，不进仓库、不再分发。

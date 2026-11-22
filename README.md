@@ -1,6 +1,6 @@
 # 画室（studio）
 
-给 WhaleLife 用的本地/在线出图与拍视频插件。父插件统一管后端、工作流、模型和设置页，两个子插件分别提供「画画」和「拍视频」工具。
+给 WhaleLife 用的本地/在线出图与拍视频插件。父插件统一管后端、工作流、模型和设置页，五个子插件分别提供「画画」「拍视频」「表情包工坊」「提示词小抄」和「姿势」。
 
 支持的后端：ComfyUI 直连、SD-WebUI / Forge、OpenAI 兼容接口、Gemini、通义万相。默认走 ComfyUI；线上后端只要填地址和 Key 也能直接用。
 
@@ -18,11 +18,38 @@
 ## 安装
 
 1. 把整个插件目录放到 WhaleLife 的 `plugins/` 下，目录名建议 `studio`。
-2. 重启 WhaleLife，宿主会加载父插件和 `sub/image`、`sub/video`、`sub/promptkit`。
+2. 重启 WhaleLife，宿主会加载父插件和 `sub/image`、`sub/video`、`sub/meme`、`sub/promptkit`、`sub/pose`；表情包工坊、提示词小抄、姿势都是画室的子插件，设置从画室设置页进入。
 3. 打开「画室」设置页，至少确认 ComfyUI 地址；用本地模型时再配工作流目录和模型目录。
 4. 需要本机装 ComfyUI 时，打开设置页右上角的「本机部署与模型推荐」。
 
 > 画室不下载模型权重，只给推荐组合、放置目录和下载线索。权重来源和许可请自行确认。
+
+## 发行包拆分
+
+从本版开始，画室的发行物拆成六个独立包，商店也按六个条目管理：
+
+| 包 | 运行时 ID | 内容 |
+| --- | --- | --- |
+| 画室 | `studio` | 父插件本体：后端、工作流、模型、设置页和共享 `lib/`；**不含任何子插件** |
+| 画画 | `studio/image` | `sub/image/` 独立包 |
+| 拍视频 | `studio/video` | `sub/video/` 独立包 |
+| 表情包工坊 | `studio/meme` | `sub/meme/` 独立包 |
+| 提示词小抄 | `studio/promptkit` | `sub/promptkit/` 独立包 |
+| 姿势 | `studio/pose` | `sub/pose/` 独立包 |
+
+父包的 `plugin.yaml` 仍保留 `sub: [image, video, meme, promptkit, pose]`，因为宿主靠它判断哪些子插件可以加载；只是父包文件清单不再包含 `sub/`。子插件包安装后落在 `plugins/studio/sub/<id>/`，依赖父包提供的 `studio` 服务和共享代码。
+
+在商店里单独安装任一子插件时，安装计划会先检查父包：父包未安装就同时安装父包和目标子插件，父包已安装则只安装目标子插件并沿用父包。这个行为沿用商店现有的依赖计划、确认框和失败回滚，不另做一套安装入口。
+
+构建六个包：
+
+```sh
+node tools/build-studio-packages.mjs
+```
+
+默认输出到 `.artifacts/studio-packages/<画室版本>/`，同时生成 `release.json`（各包版本、文件名、大小和 SHA-256）和 `store-entries.json`（可直接并入商店目录的父/子条目）。也可以显式指定一个不存在的输出目录。
+
+> 主包单独安装后只有画室设置和共享后端；画画、拍视频、表情包、提示词小抄、姿势要按需另装。手动把整个目录放进 `plugins/studio` 仍然会一次加载全部子插件。
 
 ## 配置
 
@@ -65,6 +92,15 @@
 - `snapshot` 只补地点、天气、时段和场景细节，不接衣柜，也不会把人写进画面。
 
 路径可以写绝对路径，也可以写相对 `plugins/` 根目录的路径。读不到文件就跳过，不会阻断出图。`wardrobe.personaId` 是衣柜 `state.json` 里的 persona key；留空取第一个。
+
+### 姿势（可选）
+
+姿势是画室的子插件，默认装包里就带一份 1439 张、288 组的目录，图片走 `https://ai-pose-gallery.anhao.app/`（本地有库时优先读本地）。**不绑日程、不读时间、不注入上下文**，只在生图时按需取用。画室这边默认打开 `integrations.pose`：
+
+- `draw` 传 `pose`（完整 id / 组 key / 姿势名关键词）时，会把这组姿势的英文片段接进 prompt，并在 notes 里给出参考图地址；不传就完全不干预。
+- `pose_view` 选视角，`pose_depth` 取深度图；没有 `pose_date` / `pose_block` 这类日程参数。
+- private（高级参考）默认整类隐藏，姿势页面上也不出现；要显式给 draw 用，需要姿势自己的高级开关和这里 `integrations.pose.allowPrivate` 同时打开，且人格成年。双人参考在高级之上还要姿势自己的双人开关。
+- 姿势自己的设置页：`/plugins/studio/pose/settings`，可以筛图库（点卡片复制英文提示词）、导入自己的库；高级开关在页面版本号连点 7 次后出现。
 
 ## 命令与工具
 

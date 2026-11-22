@@ -1,51 +1,55 @@
-/*! 提示词小抄（promptkit）· 画室的子插件。
+/*! 提示词小抄（promptkit）· 画室子插件。
  *
- * 词库与补词逻辑常驻父插件（studio/lib/words.ts，经 ctx.provide('promptkit') 暴露）：
- * 这里只负责四个查词工具和设置页，配置写在自己的 data/config.json。
- * 画画子插件通过同一个服务在出图前自动补词。
+ * 词库引擎常驻父插件 studio/lib/words.ts，由父级 ctx.provide('promptkit') 暴露；
+ * 这里只负责四个查词工具、一个设置页和导入接口；配置写在自己的 data/config.json。
  *
- * 词库是可选的：随包带一份示例词库（prompts.sample.json，CC0-1.0，可自由再分发），
+ * 词库是可选的：随包带一份示例词库（assets/prompts.sample.json，CC0-1.0，可自由再分发），
  * 用户也可以导入自己的 data/prompts.json；两份都没有时页面给导入说明，不报 500。
  *
- * NSFW：词库可以带成人分类（id 以 nsfw 开头）。默认关闭，关闭时四个查词工具里看不到这些分类；
- * 打开需要用户在设置页确认一次（前端确认 + 服务端 acknowledgeNsfw 双保险），打开后页面常驻警告。
- * 自动补词始终不使用成人分类，不受这个开关影响。
+ * 所有和具体作品/本机绑定的东西都走配置：词条字段名、负面/质量分类、成人前缀、动作白名单、
+ * 质量词白名单、安全词正则、配方层。默认值只描述通用约定。
+ *
+ * NSFW：分类上带 nsfw / adult / role，或 id 命中配置的 nsfwPrefix。默认关闭，关闭时四个查词工具里
+ * 看不到这些分类；打开需要用户在设置页确认一次（前端确认 + 服务端 acknowledgeNsfw 双保险），
+ * 打开后页面常驻警告。自动补词永远不使用成人分类，不受这个开关影响。
  *
  * SPDX-License-Identifier: AGPL-3.0-only
- * Additional terms under AGPLv3 Section 7: see LICENSE-ADDITIONAL.
  */
 import { existsSync, readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Context } from 'whalelife';
 import {
-  createWordEngine,
-  isNsfwCategory,
   WORD_DEFAULT,
-  WORD_KINDS,
-  WORD_LANGS,
+  WORD_LANG_MODES,
   type WordConfig,
+  type WordEngine,
 } from '../../lib/words.ts';
 
-const PAGE = '/plugins/studio/promptkit/settings';
-const API_CONFIG = '/plugins/studio/promptkit/config';
-const API_RELOAD = '/plugins/studio/promptkit/reload';
-const API_IMPORT = '/plugins/studio/promptkit/import';
-const API_RESET = '/plugins/studio/promptkit/reset-library';
-const API_SAMPLE = '/plugins/studio/promptkit/sample';
+const PLUGIN_ID = 'promptkit';
+const BASE = `/plugins/studio/${PLUGIN_ID}`;
+const PAGE = `${BASE}/settings`;
+const API_CONFIG = `${BASE}/config`;
+const API_RELOAD = `${BASE}/reload`;
+const API_IMPORT = `${BASE}/import`;
+const API_RESET = `${BASE}/reset-library`;
+const API_SAMPLE = `${BASE}/sample`;
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const DATA_FILE = join(HERE, 'data', 'prompts.json');
-const SAMPLE_FILE = join(HERE, 'assets', 'prompts.sample.json');
+/** 默认用插件自己的 data/；测试或嵌入场景可以用环境变量指到别处。 */
+const DATA_FILE = process.env.PROMPTKIT_DATA_FILE
+  ? resolve(process.env.PROMPTKIT_DATA_FILE)
+  : join(HERE, 'data', 'prompts.json');
+const SAMPLE_FILE = process.env.PROMPTKIT_SAMPLE_FILE
+  ? resolve(process.env.PROMPTKIT_SAMPLE_FILE)
+  : join(HERE, 'assets', 'prompts.sample.json');
 /** 旧版本把示例放在 data/ 下；官方包里 data 会被跳过，这里只做向后兼容 */
 const SAMPLE_LEGACY = join(HERE, 'data', 'prompts.sample.json');
-/** 打包时 assets 会随包分发；data 属于用户数据，不会被覆盖。两个都没有就用空词库。 */
-const SAMPLE_PATH = existsSync(SAMPLE_FILE) ? SAMPLE_FILE : existsSync(SAMPLE_LEGACY) ? SAMPLE_LEGACY : undefined;
 
 /** 打开 NSFW 开关时要展示的警告；页面横幅、确认框、服务端拒绝都用同一段话。 */
 const NSFW_WARNING =
-  '已打开 NSFW 分类：查词工具会返回成人内容词条。请确认你已满 18 岁，并自行承担生成与发布的责任；' +
-  'B 站 / 抖音 / QQ 群等平台会把这类内容判为违规，不要用在公开内容里。';
+  '已打开成人分类：查词工具会返回成人内容词条。请确认你已满 18 岁，并自行遵守当地法律与发布平台规则；' +
+  '不要用于违法、侵害他人或未经同意的内容。';
 
 type LibraryInfo = {
   path: string;
@@ -76,22 +80,14 @@ type PageData = {
     enrichLayers: string[];
     enrichCount: number;
   };
-  categories: Array<{ id: string; name: string; count: number; nsfw: boolean }>;
+  categories: Array<{ id: string; name: string; count: number; nsfw: boolean; negative: boolean; quality: boolean }>;
   builtAt: string;
   library: LibraryInfo;
-  /** 共用负面提示词：当前文本、词库里的全部负面词（供“一键填入”）、词条数 */
   negative: { text: string; defaultText: string; count: number };
 };
 
 const NO_LIBRARY_HINT =
   '词库还没准备好：打开「提示词小抄」设置页导入自己的词库，或直接用随包示例词库（assets/prompts.sample.json）。';
-
-const KIND_LABEL: Record<string, string> = {
-  draw: '画图 draw',
-  selfie: '自拍 selfie',
-  snapshot: '随手拍 snapshot',
-  paint: '画一幅 paint',
-};
 
 function esc(text: any) {
   return String(text ?? '').replace(/[&<>"']/g, (ch) =>
@@ -134,30 +130,26 @@ function renderPage(data: PageData, notice = '') {
   const s = data.stats;
   const lib = data.library;
   const libState = !lib || !lib.exists ? 'none' : lib.sample ? 'sample' : 'own';
-  const libPath = lib?.path || 'data/prompts.json';
   const libSize = lib?.bytes ? `${(lib.bytes / 1024).toFixed(lib.bytes > 1024 * 1024 ? 0 : 1)} KB` : '—';
-  // 用自己的词库时不挂横幅（词库卡片里已经有来源/文件/条数）；示例和缺词库才提示。
   const banner =
     libState === 'sample'
       ? `<div class="banner info">现在用的是<b>随包示例词库</b>（${lib.tags} 条词，CC0-1.0，可自由再分发）。导入自己的词库会覆盖它，随时能再切回来。</div>`
       : libState === 'none'
-        ? `<div class="banner warn">还没找到词库。在下面「词库」卡片里导入一份，或确认安装包带了 <code>sub/promptkit/assets/prompts.sample.json</code>。四个查词工具和自动补词会先空着，画图本身不受影响。</div>`
+        ? `<div class="banner warn">还没找到词库。在下面「词库」卡片里导入一份，或确认安装包带了 <code>assets/prompts.sample.json</code>。四个查词工具和自动补词会先空着，使用本插件的其他功能不受影响。</div>`
         : '';
   const brokenHtml =
     lib?.broken && libState === 'sample'
-      ? `<div class="banner warn">你自己的 <code>${esc(join(HERE, 'data', 'prompts.json'))}</code> 读不出来（不是合法 JSON 或没有可用词条），已经先回退到示例词库；重新导入一份就能覆盖。</div>`
+      ? `<div class="banner warn">你自己的 <code>${esc(lib.path)}</code> 读不出来（不是合法 JSON 或没有可用词条），已经先回退到示例词库；重新导入一份就能覆盖。</div>`
       : '';
   const noticeHtml = notice ? `<div class="banner warn">${esc(notice)}</div>` : '';
-  const nsfwBanner = cfg.allowNsfw ? `<div class="banner danger">🔞 ${esc(NSFW_WARNING)}</div>` : '';
   const off = new Set(cfg.disabledCategories);
   const layerSet = new Set(cfg.recipeLayers);
   const enrichSet = new Set(cfg.enrichLayers);
   const nsfwCats = lib?.nsfwCategories ?? s.nsfwCategories ?? 0;
   const nsfwCount = lib?.nsfwTags ?? s.nsfwTags ?? 0;
-  /** 成人分类统一标注；总闸关着时整行隐藏，所以不用再写"总闸关着"。 */
-  const nsfwHint = (nsfw: boolean) => (nsfw ? ' · 🔞 NSFW' : '');
+  const nsfwHint = (nsfw: boolean) => (nsfw ? ' · 🔞 成人' : '');
   const catRows = data.categories
-    .filter((c) => c.id !== 'negative')
+    .filter((c) => !c.negative)
     .map((c) => {
       const locked = c.nsfw && !cfg.allowNsfw;
       return `<label class="check${locked ? ' locked' : ''}"${locked ? ' hidden' : ''}><input type="checkbox" name="cat" value="${esc(
@@ -168,7 +160,7 @@ function renderPage(data: PageData, notice = '') {
     })
     .join('');
   const layerRows = data.categories
-    .filter((c) => c.id !== 'negative')
+    .filter((c) => !c.negative)
     .map((c) => {
       const locked = c.nsfw && !cfg.allowNsfw;
       const why = nsfwHint(c.nsfw);
@@ -179,14 +171,8 @@ function renderPage(data: PageData, notice = '') {
       } data-nsfw="${c.nsfw ? '1' : '0'}"><span>${esc(c.name)}<em>${esc(c.id)}${why}</em></span></label>`;
     })
     .join('');
-  const kindRows = WORD_KINDS.map(
-    (kind) =>
-      `<label class="check"><input type="checkbox" name="ekind" value="${kind}"${
-        cfg.enrichKinds.includes(kind) ? ' checked' : ''
-      }><span>${KIND_LABEL[kind]}<em>${kind}</em></span></label>`,
-  ).join('');
   const enrichRows = data.categories
-    .filter((c) => c.id !== 'negative')
+    .filter((c) => !c.negative)
     .map((c) => {
       const blocked = c.nsfw;
       const hidden = c.nsfw && !cfg.allowNsfw;
@@ -206,22 +192,26 @@ function renderPage(data: PageData, notice = '') {
 *{box-sizing:border-box}
 body{margin:0;padding:32px 28px 36px}
 main{max-width:880px;margin:0 auto}
-header{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;margin-bottom:20px}
+header{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;margin-bottom:12px}
 h1{font-size:27px;letter-spacing:-.5px;margin:0 0 4px;font-weight:650}
 p.sub{margin:0;color:var(--muted);font-size:13px}
 section.card{background:var(--paper);border:1px solid var(--line);border-radius:14px;padding:20px 22px;margin:18px 0}
 h2{font-size:16px;margin:0 0 6px}
 p.hint{margin:0 0 14px;color:var(--muted);font-size:13px}
-.grid{display:grid;grid-template-columns:1fr 1fr;gap:14px 18px}
-label{display:grid;gap:6px;font-size:13px;color:var(--muted)}
-input,select{font:inherit;padding:9px 12px;border:1px solid var(--line);border-radius:7px;background:var(--paper);color:var(--ink);width:100%}
+.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px 18px;align-items:start}
+label{display:grid;gap:6px;font-size:13px;color:var(--muted);min-width:0}
+input,select,textarea{font:inherit;padding:9px 12px;border:1px solid var(--line);border-radius:7px;background:var(--paper);color:var(--ink);width:100%;height:40px;min-width:0;box-sizing:border-box;line-height:1.5;vertical-align:middle}
+textarea{min-height:92px;height:auto;resize:vertical;line-height:1.55}
+input[type=checkbox],input[type=radio]{width:auto;height:auto}
+select{cursor:pointer}
+input[type=number]{font-variant-numeric:tabular-nums}
 label.check{display:flex;align-items:center;gap:10px;padding:9px 10px;border:1px solid var(--line);border-radius:9px;color:var(--ink);cursor:pointer}
-label.check input{width:auto}
+label.check input{width:auto;height:auto}
 label.check em{display:block;font-style:normal;font-size:12px;color:var(--muted)}
 label.check.disabled{opacity:.45;cursor:not-allowed}
 label.toggle{display:flex;align-items:center;gap:10px;padding:9px 0;color:var(--ink);cursor:pointer}
-label.toggle input{width:auto}
-.checks{display:grid;grid-template-columns:1fr 1fr;gap:10px 12px}
+label.toggle input{width:auto;height:auto}
+.checks{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 12px}
 h3{font-size:13px;margin:18px 0 8px;color:var(--muted);font-weight:600}
 .row{display:flex;gap:10px;align-items:center;margin-top:18px;flex-wrap:wrap}
 button{font:inherit;padding:9px 14px;border:1px solid var(--line);border-radius:7px;background:var(--paper);color:var(--ink);cursor:pointer}
@@ -242,46 +232,48 @@ th{color:var(--muted);font-weight:500;width:130px}
 .banner.danger{border-color:#e2b4b4;background:#fdf0f0;color:#8a2b2b;font-weight:500}
 label.check.locked{opacity:.5;cursor:not-allowed;border-style:dashed}
 label.check[hidden]{display:none}
-textarea{font:inherit;padding:10px 12px;border:1px solid var(--line);border-radius:7px;background:var(--paper);color:var(--ink);width:100%;min-height:104px;resize:vertical;line-height:1.55}
 .adv{margin:28px 0 10px;text-align:center}
 .adv a{color:var(--muted);font-size:12px;text-decoration:none;opacity:.45}
 .adv a:hover{opacity:1;text-decoration:underline}
 .nsfw-row{display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px dashed var(--line);border-radius:10px;margin-top:10px}
-@media(max-width:640px){.grid,.checks{grid-template-columns:1fr}}
+.to-top{position:fixed;right:22px;bottom:22px;z-index:20;width:44px;height:44px;padding:0;display:grid;place-items:center;border-radius:50%;border:1px solid var(--line);background:var(--paper);color:var(--ink);box-shadow:0 8px 24px rgba(18,110,104,.16);font-size:20px;line-height:1;opacity:0;transform:translateY(10px);pointer-events:none;transition:opacity .18s ease,transform .18s ease}
+.to-top.show{opacity:1;transform:none;pointer-events:auto}
+.to-top:hover{background:var(--soft)}
+@media(max-width:640px){.grid,.checks{grid-template-columns:1fr}.to-top{right:14px;bottom:14px}}
 </style></head><body><main>
-<header><div><h1>提示词小抄</h1><p class="sub">${s.categories} 个分类 · ${s.tags} 条词 · 当前启用 ${s.enabledCategories} 个分类 / ${s.enabledTags} 条</p></div></header>
-${banner}${brokenHtml}${noticeHtml}${nsfwBanner}
+<header><div><h1>提示词小抄设置</h1><p class="sub">${s.categories} 个分类 · ${s.tags} 条词 · 当前启用 ${s.enabledCategories} 个分类 / ${s.enabledTags} 条</p></div></header>
+${banner}${brokenHtml}${noticeHtml}
 
 <section class="card">
   <h2>词库</h2>
-  <p class="hint">四个查词工具（<code>prompt_categories / prompt_search / prompt_pick / prompt_recipe</code>）和出图前的「自动补词」都读这份词库；不装词库也能画图、拍视频，只是没有这些现成的词。随包的示例词库是自撰的通用词（CC0-1.0，可自由再分发），够跑通流程；换成自己的词库直接覆盖即可，原始私有词库不用进仓库。</p>
+  <p class="hint">四个查词工具（<code>prompt_categories / prompt_search / prompt_pick / prompt_recipe</code>）和「自动补词」都读这份词库；没有词库也能使用本插件的其他功能，只是没有现成的词。随包的示例词库是自撰的通用词（CC0-1.0，可自由再分发），够跑通流程；换成自己的词库直接覆盖即可，原始私有词库不用进仓库。</p>
   <table>
     <tr><th>当前来源</th><td>${libState === 'own' ? '你自己的词库' : libState === 'sample' ? '随包示例词库' : '还没有词库'}</td></tr>
-    <tr><th>文件</th><td><code>${esc(libPath)}</code></td></tr>
+    <tr><th>文件</th><td><code>${esc(lib.path || 'data/prompts.json')}</code></td></tr>
     <tr><th>构建时间</th><td>${esc(lib?.builtAt || '未知')} · ${libSize}</td></tr>
     <tr><th>词条</th><td>${lib?.tags ?? 0} 条 · ${lib?.categories ?? 0} 个分类</td></tr>
   </table>
   <h3>导入自己的词库</h3>
-  <p class="hint">选一个 JSON 文件（上限 8MB），导入后写到 <code>sub/promptkit/data/prompts.json</code>，立即生效。也可以直接把这个文件放进该目录，再点「重新载入数据」。</p>
+  <p class="hint">选一个 JSON 文件（上限 8MB），导入后写到 <code>data/prompts.json</code>，立即生效。也可以直接把这个文件放进该目录，再点「重新载入数据」。</p>
   <div class="row" style="margin-top:8px">
     <input type="file" id="libFile" accept=".json,application/json" style="max-width:340px">
     <button class="primary" id="libImport">导入词库</button>
     <button id="libDownload">下载示例词库</button>
     <button id="libReset">恢复示例词库</button>
   </div>
-  <p class="hint" style="margin-top:12px">格式：<code>{"categories":[{"id":"lighting","name":"光影"}],"tags":[{"cat":"lighting","zh":"逆光","en":"backlight"}]}</code>。词库是从外部数据生成的，可以用 <code>node sub/promptkit/scripts/build-data.mjs</code> 按自己的源数据重建；随包示例词库不含成人内容。</p>
+  <p class="hint" style="margin-top:12px">格式：<code>{"categories":[{"id":"lighting","name":"光影"}],"tags":[{"cat":"lighting","zh":"逆光","en":"backlight"}]}</code>。字段名可以换，在「高级设置」里改主/副字段即可；词库可以从外部数据生成，见 <code>scripts/build-data.mjs</code>。随包示例词库不含成人内容。</p>
   <div id="libMsg"></div>
 </section>
 
 <section class="card">
   <h2>默认偏好</h2>
-  <p class="hint">模型没指定参数时用这里的默认值，不影响手动传参。</p>
+  <p class="hint">工具没指定参数时用这里的默认值，不影响手动传参。</p>
   <div class="grid">
     <label>默认语言
       <select id="lang">
-        <option value="en"${cfg.lang === 'en' ? ' selected' : ''}>英文（画图模型最跟得住）</option>
-        <option value="zh"${cfg.lang === 'zh' ? ' selected' : ''}>中文</option>
-        <option value="both"${cfg.lang === 'both' ? ' selected' : ''}>中英都给</option>
+        <option value="primary"${cfg.lang === 'primary' ? ' selected' : ''}>主字段（${esc(cfg.fields.primary)}）</option>
+        <option value="secondary"${cfg.lang === 'secondary' ? ' selected' : ''}>副字段（${esc(cfg.fields.secondary)}）</option>
+        <option value="both"${cfg.lang === 'both' ? ' selected' : ''}>两个都给</option>
       </select>
     </label>
     <label>默认挑词数量
@@ -291,17 +283,17 @@ ${banner}${brokenHtml}${noticeHtml}${nsfwBanner}
 </section>
 
 <section class="card">
-  <h2>生图自动补词</h2>
-  <p class="hint">画室出图前先把正文里的中文词补成词库英文，再从勾选的层挑词接在后面；正文里已经有的词跳过。质量层只取「杰作 / 最佳质量 / 高分辨率」这类质量词，画风与分级词不会自动加。补完的词会写进出图结果的 notes。</p>
+  <h2>自动补词</h2>
+  <p class="hint">调用方在出图/生成前把正文交给本插件：先把正文里的副字段换成词库主字段，再从勾选的层挑词接在后面；正文里已经有的词跳过。补了什么会由调用方写进结果说明。自动补词默认关闭，需要在这里显式打开。</p>
   <label class="toggle"><input type="checkbox" id="autoEnrich"${cfg.autoEnrich ? ' checked' : ''}><span>启用自动补词</span></label>
   <div class="grid" style="margin-top:10px">
     <label>每次最多补几个
       <input id="enrichCount" type="number" min="1" max="5" step="1" value="${cfg.enrichCount}">
     </label>
+    <label>动作白名单（逗号分隔，* 表示全部）
+      <input id="enrichKinds" value="${esc(cfg.enrichKinds.join(', '))}" placeholder="*">
+    </label>
   </div>
-  <h3>给哪些动作补</h3>
-  <p class="hint">默认四个动作都补，但只补「质量与风格」里的质量词（杰作/最佳质量/高分辨率等）；自拍/随手拍/画一幅的构图和镜头不会被改。想要更多细节可以把光影、场景等层勾上，也可以单独关掉某个动作。</p>
-  <div class="checks">${kindRows}</div>
   <h3>从哪些层补</h3>
   <p class="hint">按勾选的层补词，正文里已经有的词会跳过。${
     cfg.allowNsfw ? '成人分类不参与自动补词（开关开着也只用于查词）。' : ''
@@ -310,8 +302,8 @@ ${banner}${brokenHtml}${noticeHtml}${nsfwBanner}
 </section>
 
 <section class="card">
-  <h2>负面提示词</h2>
-  <p class="hint">这里填的文字会作为画图、自拍、随手拍、画一幅的<b>共用负面提示词</b>：调用时自己没传 <code>negative</code> 才会用它，传了就以传的为准；留空表示不覆盖工作流自带的负面。词库里「负面」分类的 ${data.negative.count} 条词可以一键填进来，再自己删改。</p>
+  <h2>共用负面提示词</h2>
+  <p class="hint">这里填的文字会作为调用方的<b>共用负面提示词</b>：调用时自己没传 <code>negative</code> 才用它，传了就以传的为准；留空表示不覆盖调用方自带的负面。词库里负面分类的 ${data.negative.count} 条词可以一键填进来，再自己删改。</p>
   <textarea id="negativePrompt" spellcheck="false" placeholder="low quality, blurry, watermark, ...">${esc(
     data.negative.text,
   )}</textarea>
@@ -329,19 +321,56 @@ ${banner}${brokenHtml}${noticeHtml}${nsfwBanner}
 
 <section class="card">
   <h2>随机配方用的层</h2>
-  <p class="hint"><code>prompt_recipe</code> 只从勾选的层里各取一个词。场景和道具建议留给调用方，避免“室内 + 暴风雪”这种打架组合。</p>
+  <p class="hint"><code>prompt_recipe</code> 从勾选的层里各取一个词；不勾任何层时按启用的分类兜底。最多生成 <input id="recipeMaxLayers" type="number" min="1" max="20" step="1" value="${cfg.recipeMaxLayers}" style="width:70px;display:inline-block;padding:4px 6px"> 层。场景和道具建议留给调用方，避免“室内 + 暴风雪”这种打架组合。</p>
   <div class="checks">${layerRows}</div>
+</section>
+
+<section class="card" id="advPanel" hidden>
+  <h2>高级：字段与分类语义</h2>
+  <p class="hint">这些是词库结构和分类含义的约定。换一份字段名或分类 id 不同的词库时改这里，不用改代码。</p>
+  <div class="grid">
+    <label>词条主字段 <input id="fieldPrimary" value="${esc(cfg.fields.primary)}" placeholder="en"></label>
+    <label>词条副字段 <input id="fieldSecondary" value="${esc(cfg.fields.secondary)}" placeholder="zh"></label>
+    <label>负面分类 id <input id="semNegative" value="${esc(cfg.semantics.negative)}" placeholder="negative"></label>
+    <label>质量分类 id <input id="semQuality" value="${esc(cfg.semantics.quality)}" placeholder="quality"></label>
+  </div>
+  <label style="margin-top:12px">质量词白名单（逗号或换行分隔，留空=不额外收窄）
+    <textarea id="qualityAllowlist" spellcheck="false" placeholder="masterpiece, best quality, highres">${esc(
+      cfg.qualityAllowlist.join(', '),
+    )}</textarea>
+  </label>
+  <label style="margin-top:12px">安全词正则（每行一条，留空=不额外过滤）
+    <textarea id="blockedPatterns" spellcheck="false" placeholder="\\b(explicit|nsfw|nude)\\b">${esc(
+      cfg.blockedPatterns.join('\n'),
+    )}</textarea>
+  </label>
+</section>
+
+<section class="card" id="nsfwCard">
+  <h2>NSFW 设置</h2>
+  <p class="hint">默认关闭。打开后才会显示成人分类、分类前缀和提示；自动补词永远不用成人分类。</p>
+  <label class="toggle"><input type="checkbox" id="allowNsfw"${
+    cfg.allowNsfw ? ' checked' : ''
+  }><span>允许查词工具使用成人分类</span></label>
+  <div id="nsfwDetails"${cfg.allowNsfw ? '' : ' hidden'}>
+    <div class="grid" style="margin-top:12px">
+      <label>成人分类 id 前缀 <input id="semNsfwPrefix" value="${esc(cfg.semantics.nsfwPrefix)}" placeholder="nsfw"></label>
+      <label>词库里带 ${nsfwCats} 个成人分类 / ${nsfwCount} 条词</label>
+    </div>
+    <p class="hint" style="margin-top:10px">勾选后还要点页面最下面的「保存设置」才生效；关掉同样点保存。自动补词永远不用成人分类。</p>
+    <div class="banner danger" id="nsfwWarn"${cfg.allowNsfw ? '' : ' hidden'}>🔞 ${esc(NSFW_WARNING)}</div>
+  </div>
 </section>
 
 <section class="card">
   <h2>数据</h2>
   <table>
-    <tr><th>词库文件</th><td><code>${esc(libPath)}</code>${libState === 'sample' ? '（随包示例）' : ''}</td></tr>
+    <tr><th>词库文件</th><td><code>${esc(lib.path || 'data/prompts.json')}</code>${libState === 'sample' ? '（随包示例）' : ''}</td></tr>
     <tr><th>构建时间</th><td>${esc(s.builtAt || '未知')}</td></tr>
     <tr><th>词条</th><td>${s.tags} 条（启用 ${s.enabledTags} 条）</td></tr>
-    <tr><th>来源</th><td>随包示例词库为自撰通用词（CC0-1.0）；自己的词库可以用 <code>node sub/promptkit/scripts/build-data.mjs --full</code> 重建（全量，含 NSFW），不带参数是安全子集</td></tr>
+    <tr><th>来源</th><td>随包示例词库为自撰通用词（CC0-1.0）；自己的词库见 <code>scripts/build-data.mjs --source &lt;源词库&gt;</code></td></tr>
     <tr><th>自动补词</th><td>${s.autoEnrich ? '开' : '关'} · ${s.enrichKinds.join('、') || '无动作'} · ${s.enrichLayers.join('、') || '无层'} · 最多 ${s.enrichCount} 个</td></tr>
-    <tr><th>共用负面</th><td>${data.negative.text ? `已设置（${data.negative.text.length} 字符）` : '没设置，用工作流自带的负面'}</td></tr>
+    <tr><th>共用负面</th><td>${data.negative.text ? `已设置（${data.negative.text.length} 字符）` : '没设置，用调用方自带的负面'}</td></tr>
   </table>
   <div class="row">
     <button id="reload">重新载入数据</button>
@@ -352,35 +381,34 @@ ${banner}${brokenHtml}${noticeHtml}${nsfwBanner}
 </section>
 
 <p class="adv"><a href="#" id="advToggle">高级设置</a></p>
-
-<section class="card" id="advPanel" hidden>
-  <h2>进阶</h2>
-  <p class="hint">词库里带了 ${nsfwCats} 个成人分类 / ${nsfwCount} 条词（id 以 <code>nsfw</code> 开头）。开关没开时，它们不会出现在任何查词工具里；<b>自动补词永远不用成人分类</b>。词条本身留在文件里，随时能开能关。${
-    nsfwCount ? '' : '当前词库里没有成人分类。'
-  }</p>
-  <label class="toggle"><input type="checkbox" id="allowNsfw"${
-    cfg.allowNsfw ? ' checked' : ''
-  }><span>允许查词工具使用 NSFW 分类</span></label>
-  <p class="hint">勾选后还要点页面最下面的「保存设置」才生效；关掉同样点保存。</p>
-  <div class="banner danger" id="nsfwWarn"${cfg.allowNsfw ? '' : ' hidden'}>🔞 ${esc(NSFW_WARNING)}</div>
-</section>
+<button class="to-top" id="toTop" type="button" aria-label="回到顶部" title="回到顶部">↑</button>
 <script>
 const $ = (s) => document.querySelector(s);
 const msg = (t, bad) => { const el = $('#msg'); el.textContent = t || ''; el.className = bad ? 'bad' : ''; };
 const libMsg = (t, bad) => { const el = $('#libMsg'); el.textContent = t || ''; el.className = bad ? 'bad' : ''; };
+const toTop = $('#toTop');
+if (toTop) {
+  const syncToTop = () => toTop.classList.toggle('show', window.scrollY > 260);
+  toTop.onclick = () => window.scrollTo({ top: 0, behavior: 'smooth' });
+  window.addEventListener('scroll', syncToTop, { passive: true });
+  syncToTop();
+}
 const cats = () => Array.from(document.querySelectorAll('input[name=cat]'));
 const layers = () => Array.from(document.querySelectorAll('input[name=layer]'));
-const ekinds = () => Array.from(document.querySelectorAll('input[name=ekind]'));
 const elayers = () => Array.from(document.querySelectorAll('input[name=elayer]'));
 const nsfwBox = $('#allowNsfw');
+const nsfwDetails = $('#nsfwDetails');
 const nsfwWarn = $('#nsfwWarn');
 const negBox = $('#negativePrompt');
 const NEG_DEFAULT = ${jsString(data.negative.defaultText)};
 const NSFW_TEXT = ${jsString(NSFW_WARNING)};
 const NSFW_COUNT = ${nsfwCount};
+const DEFAULT = ${jsString(JSON.stringify(WORD_DEFAULT))};
+const DEFAULTS = JSON.parse(DEFAULT);
 // 总闸关着时，成人分类整行隐藏；保存时跳过它们，保留原来的状态。
 function syncNsfw() {
   const on = Boolean(nsfwBox && nsfwBox.checked);
+  if (nsfwDetails) nsfwDetails.hidden = !on;
   if (nsfwWarn) nsfwWarn.hidden = !on;
   document.querySelectorAll('input[data-nsfw="1"]').forEach((x) => {
     const label = x.closest('label');
@@ -389,7 +417,6 @@ function syncNsfw() {
       label.hidden = !on;
       label.classList.toggle('locked', !on && !isEnrich);
     }
-    // 补词层的成人分类本来就是禁用；其余跟着总闸走
     if (!isEnrich) x.disabled = !on;
   });
 }
@@ -398,9 +425,10 @@ if (nsfwBox) {
     const ok = !nsfwBox.checked || window.confirm('开启后，查词工具会返回成人内容词条（共 ' + NSFW_COUNT + ' 条）。\\n\\n' + NSFW_TEXT + '\\n\\n确定要打开吗？');
     if (!ok) nsfwBox.checked = false;
     syncNsfw();
-    msg(nsfwBox.checked ? '已勾选 NSFW（还没保存）：点下面的「保存设置」后生效' : '已取消 NSFW（还没保存）');
+    msg(nsfwBox.checked ? '已勾选成人分类（还没保存）：点下面的「保存设置」后生效' : '已取消成人分类（还没保存）');
   };
 }
+syncNsfw();
 async function post(url, body) {
   const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
   const data = await res.json().catch(() => ({}));
@@ -423,6 +451,9 @@ if ($('#negFill')) {
     msg('已填入词库里的全部负面词（还没保存）');
   };
 }
+function splitList(value) {
+  return String(value || '').split(/[,，\\n]/).map((s) => s.trim()).filter(Boolean);
+}
 $('#save').onclick = async () => {
   try {
     const nsfw = Boolean(nsfwBox && nsfwBox.checked);
@@ -431,13 +462,22 @@ $('#save').onclick = async () => {
       pickCount: Number($('#pickCount').value),
       disabledCategories: cats().filter((x) => !x.disabled && !x.checked).map((x) => x.value),
       recipeLayers: layers().filter((x) => x.checked).map((x) => x.value),
+      recipeMaxLayers: Number($('#recipeMaxLayers').value),
       autoEnrich: $('#autoEnrich').checked,
-      enrichKinds: ekinds().filter((x) => x.checked).map((x) => x.value),
+      enrichKinds: splitList($('#enrichKinds').value),
       enrichLayers: elayers().filter((x) => x.checked && !x.disabled).map((x) => x.value),
       enrichCount: Number($('#enrichCount').value),
       negativePrompt: negBox ? negBox.value : '',
       allowNsfw: nsfw,
       acknowledgeNsfw: nsfw,
+      fields: { primary: $('#fieldPrimary').value.trim(), secondary: $('#fieldSecondary').value.trim() },
+      semantics: {
+        negative: $('#semNegative').value.trim(),
+        quality: $('#semQuality').value.trim(),
+        nsfwPrefix: $('#semNsfwPrefix').value.trim(),
+      },
+      qualityAllowlist: splitList($('#qualityAllowlist').value),
+      blockedPatterns: splitList($('#blockedPatterns').value),
     };
     const data = await post('${API_CONFIG}', body);
     msg('已保存：启用 ' + data.stats.enabledCategories + ' 个分类 / ' + data.stats.enabledTags + ' 条词；自动补词 ' + (data.stats.autoEnrich ? '开' : '关') + '；共用负面 ' + (body.negativePrompt.trim() ? '已设置' : '未设置'));
@@ -491,16 +531,24 @@ $('#libReset').onclick = async () => {
   } catch (e) { libMsg('操作失败：' + e.message, true); }
 };
 $('#reset').onclick = () => {
-  $('#lang').value = '${WORD_DEFAULT.lang}';
-  $('#pickCount').value = '${WORD_DEFAULT.pickCount}';
-  $('#autoEnrich').checked = ${WORD_DEFAULT.autoEnrich ? 'true' : 'false'};
-  $('#enrichCount').value = '${WORD_DEFAULT.enrichCount}';
-  if (nsfwBox) nsfwBox.checked = ${WORD_DEFAULT.allowNsfw ? 'true' : 'false'};
-  if (negBox) negBox.value = ${JSON.stringify(WORD_DEFAULT.negativePrompt)};
-  cats().forEach((x) => { x.checked = !${JSON.stringify(WORD_DEFAULT.disabledCategories)}.includes(x.value); });
-  layers().forEach((x) => { x.checked = ${JSON.stringify(WORD_DEFAULT.recipeLayers)}.includes(x.value); });
-  ekinds().forEach((x) => { x.checked = ${JSON.stringify(WORD_DEFAULT.enrichKinds)}.includes(x.value); });
-  elayers().forEach((x) => { if (x.disabled) return; x.checked = ${JSON.stringify(WORD_DEFAULT.enrichLayers)}.includes(x.value); });
+  $('#lang').value = DEFAULTS.lang;
+  $('#pickCount').value = DEFAULTS.pickCount;
+  $('#recipeMaxLayers').value = DEFAULTS.recipeMaxLayers;
+  $('#autoEnrich').checked = DEFAULTS.autoEnrich;
+  $('#enrichCount').value = DEFAULTS.enrichCount;
+  $('#enrichKinds').value = DEFAULTS.enrichKinds.join(', ');
+  $('#fieldPrimary').value = DEFAULTS.fields.primary;
+  $('#fieldSecondary').value = DEFAULTS.fields.secondary;
+  $('#semNegative').value = DEFAULTS.semantics.negative;
+  $('#semQuality').value = DEFAULTS.semantics.quality;
+  $('#semNsfwPrefix').value = DEFAULTS.semantics.nsfwPrefix;
+  $('#qualityAllowlist').value = DEFAULTS.qualityAllowlist.join(', ');
+  $('#blockedPatterns').value = DEFAULTS.blockedPatterns.join('\\n');
+  if (nsfwBox) nsfwBox.checked = DEFAULTS.allowNsfw;
+  if (negBox) negBox.value = DEFAULTS.negativePrompt;
+  cats().forEach((x) => { x.checked = !DEFAULTS.disabledCategories.includes(x.value); });
+  layers().forEach((x) => { x.checked = DEFAULTS.recipeLayers.includes(x.value); });
+  elayers().forEach((x) => { if (!x.disabled) x.checked = DEFAULTS.enrichLayers.includes(x.value); });
   syncNsfw();
   msg('已恢复成默认（还没保存）');
 };
@@ -545,22 +593,9 @@ function fallbackPageData(path: string): PageData {
 }
 
 export function apply(ctx: Context) {
-  // 词库引擎归本插件所有：停用/卸载「提示词小抄」时，画画那边的 optional('promptkit') 会跟着解绑，
-  // 自动补词也就真正停了（以前引擎注册在父级，关掉子插件照样在补词）。
-  // 配置走 ctx.config（本插件自己的 data 目录），父级不再读这里的私有文件。
-  const engineInstance = createWordEngine({
-    file: DATA_FILE,
-    sample: SAMPLE_PATH,
-    readConfig: async () => {
-      try {
-        return await ctx.config.read('config.json');
-      } catch {
-        return null;
-      }
-    },
-  });
-  ctx.provide('promptkit', engineInstance);
-  const engine = () => engineInstance;
+  // 引擎由父插件 studio 在 apply() 里注册；子插件只负责工具与设置页。
+  // 这样画画子插件和本设置页共享同一份词库，停用/卸载时由父级统一释放。
+  const engine = () => ctx.get('promptkit') as unknown as WordEngine | undefined;
 
   /** 页面用：服务没注册或词库读崩都抛，由调用方降级渲染。 */
   const loadPage = async (): Promise<PageData> => {
@@ -583,10 +618,7 @@ export function apply(ctx: Context) {
     return null;
   };
 
-  /**
-   * 工具结果里附带「这次读的是哪份词库」。
-   * 词库坏了会静默回退示例，不说明的话调用方会以为 2742 条都在用。
-   */
+  /** 工具结果里附带「这次读的是哪份词库」。 */
   const libraryNote = async (): Promise<{ library?: unknown; notice?: string }> => {
     try {
       const lib = await engine()!.library();
@@ -606,7 +638,7 @@ export function apply(ctx: Context) {
     name: 'prompt_categories',
     description:
       '列出提示词小抄里当前启用的分类和词条数量。想按分类挑词先看这个。' +
-      '成人（NSFW）分类默认隐藏，要在设置页打开 NSFW 开关才会出现。',
+      '成人分类默认隐藏，要在设置页打开开关才会出现。',
     danger: 'safe',
     schema: { type: 'object', properties: {}, additionalProperties: false },
     async run() {
@@ -625,8 +657,8 @@ export function apply(ctx: Context) {
   ctx.tools.register({
     name: 'prompt_search',
     description:
-      '在提示词小抄里按关键词找词（中英都行）。找到的 en 值可以直接拼进 selfie 的 scene/mood 或 draw 的 prompt。' +
-      '成人（NSFW）分类默认搜不到，需先在设置页打开开关。',
+      '在提示词小抄里按关键词找词，返回可直接拼进生成提示词的文本。' +
+      '成人分类默认搜不到，需先在设置页打开开关。',
     danger: 'safe',
     schema: {
       type: 'object',
@@ -634,7 +666,7 @@ export function apply(ctx: Context) {
         query: { type: 'string', minLength: 1, description: '关键词，例如 窗、笑、傍晚、window' },
         category: { type: 'string', description: '限定分类 id，可省略' },
         limit: { type: 'integer', description: '返回条数，默认 8，最多 20' },
-        lang: { type: 'string', enum: WORD_LANGS, description: '省略时用设置里的默认语言' },
+        lang: { type: 'string', enum: WORD_LANG_MODES, description: '省略时用设置里的默认语言' },
       },
       required: ['query'],
       additionalProperties: false,
@@ -650,16 +682,15 @@ export function apply(ctx: Context) {
   ctx.tools.register({
     name: 'prompt_pick',
     description:
-      '按分类随机挑几个词，用来给自拍/随手拍/画图加姿势、表情、构图、光影、场景、道具。' +
-      '挑出来的 en 直接填进 selfie 的 scene/mood/outfit 或 draw 的 prompt；只补画面细节，不改人物原本的长相和年龄设定。' +
-      '成人（NSFW）分类默认不参与随机，需先在设置页打开开关。',
+      '按分类随机挑几个词，用来给生成提示词补姿势、表情、构图、光影、场景、道具等细节。' +
+      '只补画面细节，不改人物原本的长相和年龄设定。成人分类默认不参与随机，需先在设置页打开开关。',
     danger: 'safe',
     schema: {
       type: 'object',
       properties: {
         category: { type: 'string', description: '分类 id（prompt_categories 里的），省略则在启用的分类里随机' },
         count: { type: 'integer', description: '挑几个，省略用设置里的默认值，最多 8' },
-        lang: { type: 'string', enum: WORD_LANGS, description: '省略时用设置里的默认语言' },
+        lang: { type: 'string', enum: WORD_LANG_MODES, description: '省略时用设置里的默认语言' },
       },
       additionalProperties: false,
     },
@@ -674,14 +705,14 @@ export function apply(ctx: Context) {
   ctx.tools.register({
     name: 'prompt_recipe',
     description:
-      '按设置里的配方层（默认 构图/光影/姿势/表情/风格 各一）拼一段随机画面描述。' +
-      '场景和道具留给调用方指定，避免拼出"室内 + 暴风雪"这种打架的组合；不合场景的词自己删掉。',
+      '按设置里的配方层各取一个词，拼一段随机画面描述。场景和道具留给调用方指定，避免拼出“室内 + 暴风雪”这种打架的组合；不合场景的词自己删掉。',
     danger: 'safe',
     schema: {
       type: 'object',
       properties: {
-        lang: { type: 'string', enum: WORD_LANGS, description: '省略时用设置里的默认语言' },
+        lang: { type: 'string', enum: WORD_LANG_MODES, description: '省略时用设置里的默认语言' },
         extra: { type: 'string', description: '额外要加进画面的词句，可省略' },
+        layers: { type: 'array', items: { type: 'string' }, description: '临时指定层，省略用设置里的配方层' },
       },
       additionalProperties: false,
     },
@@ -702,12 +733,12 @@ export function apply(ctx: Context) {
       // 词库缺失、引擎没注册、词库 JSON 坏了，都不该把设置页打成 500：降级渲染并给出导入入口。
       notice = `设置页数据没读到：${String(error?.message ?? error).slice(0, 200)}。下面的「词库」卡片可以导入一份 JSON 再试。`;
       ctx.logger.warn('提示词小抄设置页降级渲染', { error: String(error?.message ?? error) });
-      data = fallbackPageData(join(HERE, 'data', 'prompts.json'));
+      data = fallbackPageData(DATA_FILE);
     }
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     res.setHeader('Cache-Control', 'no-store');
     res.end(renderPage(data, notice));
-  }, { title: '提示词小抄设置', settings: true, navigation: true });
+  }, { title: '提示词小抄设置', settings: true, navigation: false });
 
   ctx.web.api(API_IMPORT, async (req: any, res: any, { signal }: any) => {
     try {
@@ -755,7 +786,7 @@ export function apply(ctx: Context) {
       res.setHeader('Cache-Control', 'no-store');
       res.end(raw);
     } catch {
-      json(res, 404, { ok: false, error: '安装包里没有示例词库（sub/promptkit/assets/prompts.sample.json）' });
+      json(res, 404, { ok: false, error: '安装包里没有示例词库（assets/prompts.sample.json）' });
     }
   });
 
@@ -765,11 +796,15 @@ export function apply(ctx: Context) {
       if (!eng) throw Error(NO_LIBRARY_HINT);
       const patch = await readBody(req, signal);
       const current = (await eng.pageData()) as PageData;
-      const known = new Set(current.categories.map((c) => c.id));
+      const known = new Map(current.categories.map((c) => [c.id, c]));
+      const isBadLayer = (id: string) => {
+        const category = known.get(id);
+        return !category || category.negative || category.nsfw;
+      };
       const next: WordConfig = { ...current.config };
       if (patch?.lang !== undefined) {
-        if (!WORD_LANGS.includes(patch.lang)) throw Error('语言只能是 zh / en / both');
-        next.lang = patch.lang;
+        if (typeof patch.lang !== 'string' || !patch.lang.trim()) throw Error('lang 要是非空字符串');
+        next.lang = patch.lang as WordConfig['lang'];
       }
       if (patch?.pickCount !== undefined) {
         const n = Number(patch.pickCount);
@@ -782,8 +817,12 @@ export function apply(ctx: Context) {
       }
       if (patch?.recipeLayers !== undefined) {
         if (!Array.isArray(patch.recipeLayers)) throw Error('recipeLayers 要给数组');
-        // 负面分类不参与配方（拼出来是正面描述，混进负面词只会互相打架）。
-        next.recipeLayers = patch.recipeLayers.map(String).filter((id: string) => known.has(id) && id !== 'negative');
+        next.recipeLayers = patch.recipeLayers.map(String).filter((id: string) => known.has(id) && !isBadLayer(id));
+      }
+      if (patch?.recipeMaxLayers !== undefined) {
+        const n = Number(patch.recipeMaxLayers);
+        if (!Number.isFinite(n) || n < 1 || n > 20) throw Error('配方层数要在 1–20 之间');
+        next.recipeMaxLayers = Math.round(n);
       }
       if (patch?.autoEnrich !== undefined) {
         if (typeof patch.autoEnrich !== 'boolean') throw Error('autoEnrich 只能是 true / false');
@@ -791,13 +830,11 @@ export function apply(ctx: Context) {
       }
       if (patch?.enrichKinds !== undefined) {
         if (!Array.isArray(patch.enrichKinds)) throw Error('enrichKinds 要给数组');
-        next.enrichKinds = patch.enrichKinds.map(String).filter((id: string) => (WORD_KINDS as readonly string[]).includes(id));
+        next.enrichKinds = patch.enrichKinds.map(String).map((s: string) => s.trim()).filter((s: string) => s && s.length <= 40);
       }
       if (patch?.enrichLayers !== undefined) {
         if (!Array.isArray(patch.enrichLayers)) throw Error('enrichLayers 要给数组');
-        next.enrichLayers = patch.enrichLayers
-          .map(String)
-          .filter((id: string) => known.has(id) && id !== 'negative' && !isNsfwCategory(id));
+        next.enrichLayers = patch.enrichLayers.map(String).filter((id: string) => known.has(id) && !isBadLayer(id));
       }
       if (patch?.enrichCount !== undefined) {
         const n = Number(patch.enrichCount);
@@ -808,6 +845,29 @@ export function apply(ctx: Context) {
         if (typeof patch.negativePrompt !== 'string') throw Error('negativePrompt 要是字符串');
         if (patch.negativePrompt.length > 4000) throw Error('共用负面提示词太长了（上限 4000 字符）');
         next.negativePrompt = patch.negativePrompt.trim();
+      }
+      if (patch?.fields !== undefined) {
+        if (!patch.fields || typeof patch.fields !== 'object') throw Error('fields 要给对象');
+        const primary = String(patch.fields.primary ?? '').trim();
+        const secondary = String(patch.fields.secondary ?? '').trim();
+        if (!primary || !secondary) throw Error('fields.primary 和 fields.secondary 都要非空');
+        next.fields = { primary, secondary };
+      }
+      if (patch?.semantics !== undefined) {
+        if (!patch.semantics || typeof patch.semantics !== 'object') throw Error('semantics 要给对象');
+        next.semantics = {
+          negative: String(patch.semantics.negative ?? '').trim(),
+          quality: String(patch.semantics.quality ?? '').trim(),
+          nsfwPrefix: String(patch.semantics.nsfwPrefix ?? '').trim(),
+        };
+      }
+      if (patch?.qualityAllowlist !== undefined) {
+        if (!Array.isArray(patch.qualityAllowlist)) throw Error('qualityAllowlist 要给数组');
+        next.qualityAllowlist = patch.qualityAllowlist.map(String).map((s: string) => s.trim()).filter(Boolean).slice(0, 200);
+      }
+      if (patch?.blockedPatterns !== undefined) {
+        if (!Array.isArray(patch.blockedPatterns)) throw Error('blockedPatterns 要给数组');
+        next.blockedPatterns = patch.blockedPatterns.map(String).map((s: string) => s.trim()).filter(Boolean).slice(0, 30);
       }
       if (patch?.allowNsfw !== undefined) {
         if (typeof patch.allowNsfw !== 'boolean') throw Error('allowNsfw 只能是 true / false');
@@ -840,6 +900,6 @@ export function apply(ctx: Context) {
 
   ctx.logger.info('提示词小抄已加载', {
     settings: PAGE,
-    note: '词库可选：自己的 data/prompts.json 优先，其次随包示例词库；NSFW 分类默认隐藏，设置页可打开；画画子插件在出图前调用补词',
+    note: '画室子插件：引擎由父级 studio 提供；用户词库优先，其次随包示例；字段/分类语义/动作白名单可配置；成人分类默认隐藏',
   });
 }
