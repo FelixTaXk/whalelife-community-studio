@@ -12,8 +12,8 @@
 
 | 工具 | 作用 |
 | --- | --- |
-| `meme_make` | 单张：图 + 字幕 → 一张表情包（返回 `mediaRef` 临时引用） |
-| `meme_set` | 一套：同一张原图 + 一组字幕（≤8 条）→ 多张表情包 |
+| `studio_meme_make` | 单张：图 + 字幕 → 一张表情包（返回 `mediaRef` 临时引用） |
+| `studio_meme_set` | 一套：同一张原图 + 一组字幕（≤8 条）→ 多张表情包 |
 
 参数：
 
@@ -50,7 +50,7 @@
 
 ```
 draw/selfie → galleryId（资产 id）
-   → meme_make(sourceId, text, style)
+   → studio_meme_make(sourceId, text, style)
    → gallery.offerMedia({sessionId, base64, source:"meme"}) → mediaRef（24h）
    → gallery_collect(mediaRef, purposes:["meme"]) → asset id
    → qq_send_gallery(parts:[{"type":"image","id":<asset id>}])（装了 QQ 插件才走这步）
@@ -72,7 +72,7 @@ draw/selfie → galleryId（资产 id）
 控制台 → 插件 → 画室 → 表情包工坊，或直接打开 `/plugins/studio/meme/settings`：
 
 - **一键出图**：上传 / 图库 / AI 画参考图 + 字幕 → 成品预览、下载
-- **默认样式 / 默认宽度**：`meme_make` / `meme_set` 和设置页一键出图没传 `style` / `width` 时用
+- **默认样式 / 默认宽度**：`studio_meme_make` / `studio_meme_set` 和设置页一键出图没传 `style` / `width` 时用
 - **允许读取的本地目录**：一行一个绝对路径，留空就只允许插件输出目录和画室输出目录；保存时校验目录必须存在
 - **python 解释器路径**：留空就先复用画室配置的 Python，再探测 PATH 里带 Pillow 的 python；保存时会检查文件是否存在
 - **中文字体文件**：留空自动匹配系统字体；也可以填 `.ttf` / `.ttc` / `.otf` 的绝对路径，保存时校验文件存在
@@ -110,3 +110,4 @@ draw/selfie → galleryId（资产 id）
 - 临时输入文件写在 `data/tmp/`，渲染完即删；成品和参考图在 `data/out/`
 
 渲染一次约 0.2–0.5 秒（512 宽），不占 GPU。
+

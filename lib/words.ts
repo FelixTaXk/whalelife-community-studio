@@ -426,6 +426,13 @@ export function createWordEngine(options: WordEngineOptions) {
   };
 
   const load = (semantics: WordSemantics = lastSemantics): Data => {
+    // A child package can be installed after its parent. Keep the engine's sample path
+    // configured up front and retry once the sample appears, instead of serving the
+    // empty fallback until the whole host restarts.
+    if (cache && cache.bytes === 0 && candidates().length) {
+      cache = null;
+      broken = false;
+    }
     if (!cache) {
       broken = false;
       const list = candidates();

@@ -1,6 +1,7 @@
 id: pose
 name: 姿势
-version: 0.2.22
+version: 0.2.23
 description: 画室的姿势子插件：自带 1439 张中文姿势参考（标准系 / 上半身 / 性感系 / 双人缠绵，288 组，每组五视角，可切白模与深度图），只作生图时的可选参考，不绑日程、不注入上下文；向画画子插件提供英文提示词与参考图路径；高级参考与双人参考默认整类隐藏；图片可读本地库或走 ai-pose-gallery.anhao.app 图源；提供 pose_pick / pose_ref 工具与设置页
 apiVersion: "1.0.0"
 depends: [tools, web]
+

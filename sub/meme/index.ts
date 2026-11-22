@@ -951,7 +951,7 @@ export function apply(ctx: Context) {
   };
 
   ctx.tools.register({
-    name: 'meme_make',
+    name: 'studio_meme_make',
     description:
       '把一张图做成表情包：加底部字幕（band）、白气泡（bubble）、描边大字（plain）或顶部字幕（top）。' +
       '图可以从图库拿（sourceId，画室刚出的图返回值里就有）或给本地路径（sourcePath）。' +
@@ -992,11 +992,11 @@ export function apply(ctx: Context) {
   });
 
   ctx.tools.register({
-    name: 'meme_set',
+    name: 'studio_meme_set',
     description:
       '同一张原图做一整套表情包：给一组字幕，每条出一张，全部交给图库作临时引用（mediaRef，24 小时有效）。' +
       '适合 "给她做一套表情包" —— 字幕按情绪排：开心、生气、困、无语、干饭。最多 8 条。' +
-      '每条一句话、七八个字以内，别塞长句；图里要带中文的规则和 meme_make 一样：字写进 draw 的 prompt 并用中文引号括住、说明大小，精确排版靠字幕层压字。',
+      '每条一句话、七八个字以内，别塞长句；图里要带中文的规则和 studio_meme_make 一样：字写进 draw 的 prompt 并用中文引号括住、说明大小，精确排版靠字幕层压字。',
     danger: 'ask',
     schema: {
       type: 'object',

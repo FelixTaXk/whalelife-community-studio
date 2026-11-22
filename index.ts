@@ -202,13 +202,12 @@ export function apply(ctx: Context) {
   const promptkitData = join(promptkitDir, 'data');
   const promptkitFile = join(promptkitData, 'prompts.json');
   const promptkitSample = join(promptkitDir, 'assets', 'prompts.sample.json');
-  const promptkitSampleLegacy = join(promptkitData, 'prompts.sample.json');
   const promptkitConfig = join(promptkitData, 'config.json');
   ctx.provide(
     'promptkit',
     createWordEngine({
       file: promptkitFile,
-      sample: existsSync(promptkitSample) ? promptkitSample : existsSync(promptkitSampleLegacy) ? promptkitSampleLegacy : undefined,
+      sample: promptkitSample,
       readConfig: async () => {
         try {
           return JSON.parse(readFileSync(promptkitConfig, 'utf8'));

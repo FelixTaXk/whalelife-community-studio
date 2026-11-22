@@ -17,7 +17,7 @@ import { registerTools } from './lib/tools.ts';
 import { registerWeb } from './lib/web.ts';
 import { posePick, poseRef, stats } from './lib/service.ts';
 
-const VERSION = '0.2.22';
+const VERSION = '0.2.23';
 
 type PoseService = {
   /** 指定 id / 组 key / 关键词取一组参考；不传就按关键词挑。 */
@@ -58,3 +58,4 @@ export async function apply(ctx: Context) {
     schedule: false,
   });
 }
+
