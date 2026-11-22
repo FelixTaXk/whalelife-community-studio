@@ -1,6 +1,6 @@
 id: video
 name: 拍视频
-version: 0.2.23
+version: 0.2.24
 description: 用 ComfyUI 视频工作流出片，文生视频和图生视频都走工作流，任务后台跑、按号查结果
 apiVersion: "1.0.0"
 depends: [studio, tools]

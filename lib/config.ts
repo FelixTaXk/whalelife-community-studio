@@ -177,7 +177,7 @@ export const DEFAULTS: StudioConfig = {
   backends: {
     comfy: backend({ enabled: false, baseUrl: '', workflowsDir: '', canvasDir: '', modelsDir: '' }),
     sdwebui: backend({ enabled: false, baseUrl: '', model: '' }),
-    openai: backend({ enabled: false, baseUrl: 'https://api.openai.com/v1', model: 'gpt-image-1', size: '1024x1024', timeoutMs: 180_000 }),
+    openai: backend({ enabled: false, baseUrl: 'https://api.openai.com/v1', model: 'gpt-image-1', size: '1024x1024', timeoutMs: 600_000 }),
     gemini: backend({ enabled: false, baseUrl: 'https://generativelanguage.googleapis.com', model: 'gemini-2.5-flash-image', timeoutMs: 180_000 }),
     dashscope: backend({ enabled: false, baseUrl: 'https://dashscope.aliyuncs.com', model: 'wanx2.2-t2i-flash', size: '1024*1024' }),
   },

@@ -11,7 +11,7 @@ import type { StudioConfig } from './config.ts';
 const esc = (value: unknown) =>
   String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string));
 
-type NetworkTool = { name: string; label: string; note: string; fields: Array<{ key: string; label: string; hint?: string; password?: boolean }> };
+type NetworkTool = { name: string; label: string; note: string; fields: Array<{ key: string; label: string; hint?: string; password?: boolean; seconds?: boolean }> };
 
 const NETWORK: NetworkTool[] = [
   {
@@ -23,6 +23,7 @@ const NETWORK: NetworkTool[] = [
       { key: 'apiKey', label: 'API Key', password: true },
       { key: 'model', label: '模型' },
       { key: 'size', label: '默认尺寸', hint: '例如 1024x1024' },
+      { key: 'timeoutMs', label: '超时（秒）', hint: '慢中转站建议 300–600 秒；最大 3600', seconds: true },
     ],
   },
   {
@@ -162,9 +163,11 @@ export function renderSettings(input: {
   </header>
   <p class="note">${esc(item.note)}</p>
   <div class="grid">${item.fields.map((field) => {
-    const value = field.password ? '' : shown[field.key];
+    const value = field.password ? '' : field.seconds ? Math.round((Number(shown[field.key]) || 0) / 1000) : shown[field.key];
     const placeholder = field.password ? (shown.apiKeySet ? '已填写，留空保持原值' : '未填写') : '';
-    return `<label class="f"><span>${esc(field.label)}${field.hint ? `<i>${esc(field.hint)}</i>` : ''}</span><input type="${field.password ? 'password' : 'text'}" data-net="${esc(item.name)}" data-k="${esc(field.key)}" value="${esc(value)}" placeholder="${esc(placeholder)}" autocomplete="off"></label>`;
+    const type = field.seconds ? 'number' : field.password ? 'password' : 'text';
+    const extra = field.seconds ? ' min="30" max="3600" step="30"' : '';
+    return `<label class="f"><span>${esc(field.label)}${field.hint ? `<i>${esc(field.hint)}</i>` : ''}</span><input type="${type}" data-net="${esc(item.name)}" data-k="${esc(field.key)}" value="${esc(value)}" placeholder="${esc(placeholder)}"${extra} autocomplete="off"></label>`;
   }).join('')}</div>
 </section>`;
   }).join('');
@@ -276,6 +279,7 @@ const collect=()=>{
     body.backends[id]={enabled:true};
     document.querySelectorAll('[data-net="'+id+'"]').forEach(el=>{
       if(el.type==='password'){if(el.value.trim())body.backends[id][el.dataset.k]=el.value.trim();}
+      else if(el.dataset.k==='timeoutMs'){const sec=Number(el.value);if(Number.isFinite(sec))body.backends[id].timeoutMs=Math.round(Math.max(30,Math.min(3600,sec))*1000);}
       else body.backends[id][el.dataset.k]=el.value.trim();
     });
     ['comfy','sdwebui'].forEach(name=>body.backends[name]={enabled:false});
