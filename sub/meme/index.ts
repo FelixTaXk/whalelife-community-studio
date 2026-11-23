@@ -797,7 +797,7 @@ checkModel();
 
 $('#save').onclick = async () => {
   try {
-    const body = { python: $('#python').value.trim(), font: $('#font').value.trim(), defaultStyle: $('#style2').value, defaultWidth: Number($('#width2').value), allowedDirs: $('#allowedDirs').value.split(/\r?\n/).map((x) => x.trim()).filter(Boolean) };
+    const body = { python: $('#python').value.trim(), font: $('#font').value.trim(), defaultStyle: $('#style2').value, defaultWidth: Number($('#width2').value), allowedDirs: $('#allowedDirs').value.split(/\\r?\\n/).map((x) => x.trim()).filter(Boolean) };
     await post('${API_CONFIG}', body);
     msg('已保存');
   } catch (e) { msg('保存失败：' + e.message, true); }

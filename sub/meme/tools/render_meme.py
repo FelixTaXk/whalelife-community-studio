@@ -11,6 +11,13 @@ import sys
 
 from PIL import Image, ImageDraw, ImageFont
 
+# Node 侧固定用 UTF-8 写 stdin；Windows 控制台默认代码页会把中文读成乱码。
+for _stream, _encoding in ((sys.stdin, "utf-8"), (sys.stdout, "utf-8")):
+    try:
+        _stream.reconfigure(encoding=_encoding)
+    except Exception:
+        pass
+
 FONT_PATH = None
 
 
@@ -234,10 +241,12 @@ def render(req):
 
 if __name__ == "__main__":
     try:
-        payload = json.load(sys.stdin)
+        payload = json.loads(sys.stdin.buffer.read().decode("utf-8"))
         result = render(payload)
-        sys.stdout.write(json.dumps(result, ensure_ascii=False))
+        sys.stdout.buffer.write(json.dumps(result, ensure_ascii=False).encode("utf-8"))
     except SystemExit as e:
-        sys.stdout.write(json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False))
+        sys.stdout.buffer.write(json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False).encode("utf-8"))
     except Exception as e:  # noqa: BLE001
-        sys.stdout.write(json.dumps({"ok": False, "error": f"{type(e).__name__}: {e}"}, ensure_ascii=False))
+        sys.stdout.buffer.write(
+            json.dumps({"ok": False, "error": f"{type(e).__name__}: {e}"}, ensure_ascii=False).encode("utf-8")
+        )
